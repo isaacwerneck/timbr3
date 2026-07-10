@@ -13,11 +13,24 @@ import {
 import { Knob } from './components/Knob';
 import { Keyboard } from './components/Keyboard';
 import { Oscilloscope } from './components/Oscilloscope';
+import { WavefolderVisualizer } from './components/WavefolderVisualizer';
+import { FilterResponseVisualizer } from './components/FilterResponseVisualizer';
+import { CustomSlider } from './components/CustomSlider';
 import { SynthEngine } from './audio/SynthEngine';
-import { AudioSampleState, SynthSettings, NoteInfo } from './types';
+import { AudioSampleState, SynthSettings, NoteInfo, ModDestination, ModSource, LfoWaveform } from './types';
 
 // Configurações padrão do Sintetizador
 const defaultSettings: SynthSettings = {
+  block01Enabled: false,
+  block02Enabled: false,
+  block03Enabled: false,
+  block04Enabled: false,
+  block05Enabled: false,
+  block06Enabled: false,
+  block07Enabled: false,
+  block08Enabled: false,
+  block09Enabled: false,
+  block10Enabled: false,
   lowGain: 0,
   midGain: 2,
   highGain: -3,
@@ -33,8 +46,62 @@ const defaultSettings: SynthSettings = {
   bassBoost: 0,
   drive: 0,
   bitcrusher: 0,
+  sampleRateReduction: 0,
   polyphony: true,
   masterGain: 80,
+  wavefoldAmount: 0,
+  waveshapeAmount: 0,
+  pwmAmount: 0,
+  pwmTarget: 'square',
+  subLevel: 0,
+  subOctave: 1,
+  subDrive: 25,
+  noiseLevel: 0,
+  noiseColor: 'white',
+  lfo1: {
+    rate: 2.5,
+    depth: 25,
+    waveform: 'sine',
+    customShape: [0, 1, 0, -1],
+  },
+  lfo2: {
+    rate: 6,
+    depth: 20,
+    waveform: 'sample-hold',
+    customShape: [0, 0.8, -0.6, 0.2],
+  },
+  modMatrix: [
+    { enabled: true, source: 'lfo1', destination: 'filterCutoff', amount: 35 },
+    { enabled: true, source: 'env', destination: 'pitch', amount: 20 },
+    { enabled: false, source: 'keytrack', destination: 'filterResonance', amount: 20 },
+    { enabled: false, source: 'random', destination: 'wavefold', amount: 20 },
+  ],
+  keyDelay: 0,
+  keyHold: 0,
+  keyDecay: 200,
+  keyLoopEnvelope: false,
+  keyLoopRate: 4,
+  filterCutoff: 5200,
+  filterResonance: 4,
+  filterRouting: 'series',
+  filterParallelBlend: 50,
+  preFilterDrive: 0,
+  postFilterDrive: 0,
+  selfOscillation: 40,
+  driftAmount: 10,
+  driftEnvJitter: 10,
+  unisonVoices: 1,
+  unisonDetune: 12,
+  unisonStereoSpread: 65,
+  chorusMix: 0,
+  chorusRate: 0.8,
+  chorusDepth: 20,
+  ringModAmount: 0,
+  ringModFreq: 280,
+  gaterEnabled: false,
+  gaterWaveform: 'square',
+  gaterRate: 8,
+  gaterDepth: 100,
 };
 
 // Componente de Parafuso Realista do Cockpit
@@ -50,6 +117,7 @@ export default function App() {
   // Estados principais
   const [settings, setSettings] = useState<SynthSettings>(defaultSettings);
   const [activeTab, setActiveTab] = useState<'rec' | 'upload' | 'bip'>('rec');
+  const [controlPanelTab, setControlPanelTab] = useState<'tone' | 'mod' | 'filterfx' | 'system'>('tone');
   const [bipType, setBipType] = useState<OscillatorType>('sine');
   const [bipDuration, setBipDuration] = useState<number>(180); // ms
 
@@ -111,12 +179,148 @@ export default function App() {
   }, [isRecording]);
 
   // Atualizar knobs de parâmetros
+  const getEffectiveSettings = (s: SynthSettings): SynthSettings => {
+    const next: SynthSettings = {
+      ...s,
+      lfo1: { ...s.lfo1 },
+      lfo2: { ...s.lfo2 },
+      modMatrix: s.modMatrix.map((slot) => ({ ...slot })),
+    };
+
+    if (!s.block01Enabled) {
+      next.lowGain = 0;
+      next.midGain = 0;
+      next.highGain = 0;
+      next.bassBoost = 0;
+    }
+
+    if (!s.block02Enabled) {
+      next.attack = 0;
+      next.trim = 100;
+      next.waveshapeAmount = 0;
+      next.wavefoldAmount = 0;
+      next.pwmAmount = 0;
+      next.subLevel = 0;
+      next.subDrive = 0;
+      next.noiseLevel = 0;
+    }
+
+    if (!s.block03Enabled) {
+      next.keyAttack = 0;
+      next.keySustain = 100;
+      next.keyRelease = 10;
+    }
+
+    if (!s.block04Enabled) {
+      next.pitchCoarse = 0;
+      next.pitchFine = 0;
+    }
+
+    if (!s.block05Enabled) {
+      next.keyDelay = 0;
+      next.keyHold = 0;
+      next.keyDecay = 0;
+      next.keyLoopEnvelope = false;
+      next.keyLoopRate = 1;
+    }
+
+    if (!s.block06Enabled) {
+      next.lfo1.depth = 0;
+      next.lfo2.depth = 0;
+    }
+
+    if (!s.block07Enabled) {
+      next.modMatrix = next.modMatrix.map((slot) => ({ ...slot, enabled: false }));
+    }
+
+    if (!s.block08Enabled) {
+      next.filterCutoff = 18000;
+      next.filterResonance = 0.1;
+      next.filterRouting = 'parallel';
+      next.filterParallelBlend = 0;
+      next.preFilterDrive = 0;
+      next.postFilterDrive = 0;
+      next.selfOscillation = 0;
+    }
+
+    if (!s.block09Enabled) {
+      next.driftAmount = 0;
+      next.driftEnvJitter = 0;
+      next.unisonVoices = 1;
+      next.unisonDetune = 0;
+      next.unisonStereoSpread = 0;
+    }
+
+    if (!s.block10Enabled) {
+      next.drive = 0;
+      next.bitcrusher = 0;
+      next.sampleRateReduction = 0;
+      next.chorusMix = 0;
+      next.ringModAmount = 0;
+      next.gaterEnabled = false;
+    }
+
+    return next;
+  };
+
+  const toggleBlock = (key: keyof Pick<SynthSettings,
+    'block01Enabled' | 'block02Enabled' | 'block03Enabled' | 'block04Enabled' | 'block05Enabled' |
+    'block06Enabled' | 'block07Enabled' | 'block08Enabled' | 'block09Enabled' | 'block10Enabled'
+  >) => {
+    handleSettingChange(key, !settings[key]);
+  };
+
   const handleSettingChange = (key: keyof SynthSettings, value: any) => {
     setSettings((prev) => {
       const next = { ...prev, [key]: value };
       if (synthRef.current) {
-        synthRef.current.updateActiveVoices(next);
+        synthRef.current.updateActiveVoices(getEffectiveSettings(next));
       }
+      return next;
+    });
+  };
+
+  const handleLfoChange = (lfo: 'lfo1' | 'lfo2', key: keyof SynthSettings['lfo1'], value: any) => {
+    setSettings((prev) => {
+      const next = {
+        ...prev,
+        [lfo]: {
+          ...prev[lfo],
+          [key]: value,
+        },
+      };
+      synthRef.current?.updateActiveVoices(getEffectiveSettings(next));
+      return next;
+    });
+  };
+
+  const handleLfoCustomShape = (lfo: 'lfo1' | 'lfo2', raw: string) => {
+    const parsed = raw
+      .split(',')
+      .map((v) => Number(v.trim()))
+      .filter((v) => !Number.isNaN(v))
+      .map((v) => Math.max(-1, Math.min(1, v)));
+
+    if (parsed.length < 2) return;
+    handleLfoChange(lfo, 'customShape', parsed);
+  };
+
+  const handleModMatrixChange = (idx: number, key: keyof SynthSettings['modMatrix'][number], value: any) => {
+    setSettings((prev) => {
+      const nextMatrix = prev.modMatrix.map((slot, i) => {
+        if (i !== idx) return slot;
+        return {
+          ...slot,
+          [key]: value,
+        };
+      });
+
+      const next = {
+        ...prev,
+        modMatrix: nextMatrix,
+      };
+
+      synthRef.current?.updateActiveVoices(getEffectiveSettings(next));
       return next;
     });
   };
@@ -213,7 +417,7 @@ export default function App() {
       setErrorMessage('Nenhum som carregado para prévia.');
       return;
     }
-    synthRef.current.playPreview(settings);
+    synthRef.current.playPreview(getEffectiveSettings(settings));
   };
 
   // 6. Toque do piano
@@ -223,7 +427,7 @@ export default function App() {
     synthRef.current.init();
 
     if (!settings.polyphony) {
-      synthRef.current.stopAllNotes(settings);
+      synthRef.current.stopAllNotes(getEffectiveSettings(settings));
       setActiveMidiNotes(new Set([midiNumber]));
     } else {
       setActiveMidiNotes((prev) => {
@@ -234,12 +438,12 @@ export default function App() {
     }
 
     setTargetNote({ note: noteName, hz: freq });
-    synthRef.current.startNote(midiNumber, freq, settings);
+    synthRef.current.startNote(midiNumber, freq, getEffectiveSettings(settings));
   };
 
   const handleStopNote = (midiNumber: number) => {
     if (!synthRef.current) return;
-    synthRef.current.stopNote(midiNumber, settings);
+    synthRef.current.stopNote(midiNumber, getEffectiveSettings(settings));
     setActiveMidiNotes((prev) => {
       const next = new Set(prev);
       next.delete(midiNumber);
@@ -256,7 +460,7 @@ export default function App() {
       const freq = targetNote.hz;
       const noteName = targetNote.note;
       
-      const wavBlob = await synthRef.current.exportNote(freq, settings);
+      const wavBlob = await synthRef.current.exportNote(freq, getEffectiveSettings(settings));
       
       const url = URL.createObjectURL(wavBlob);
       const a = document.createElement('a');
@@ -290,10 +494,24 @@ export default function App() {
     setLastPlayedNote('—');
   };
 
+  const modSources: ModSource[] = ['lfo1', 'lfo2', 'env', 'velocity', 'keytrack', 'random'];
+  const modDestinations: ModDestination[] = [
+    'pitch',
+    'filterCutoff',
+    'filterResonance',
+    'wavefold',
+    'decay',
+    'preDrive',
+    'postDrive',
+    'ringModFreq',
+    'ringModAmount',
+  ];
+  const lfoWaveforms: LfoWaveform[] = ['sine', 'triangle', 'sawtooth', 'square', 'sample-hold', 'custom'];
+
   return (
-    <div className="min-h-screen bg-[#383b40] text-[#eef2f7] font-sans pb-32 relative select-none overflow-x-hidden p-4 md:p-8">
+    <div className="min-h-screen bg-[#383b40] text-[#eef2f7] font-sans pb-28 sm:pb-32 relative select-none overflow-x-hidden p-3 sm:p-4 md:p-8">
       {/* Moldura metálica principal do Cockpit Overhead Panel */}
-      <div className="max-w-[1200px] mx-auto bg-[#43474e] border-4 border-[#25272a] rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_2px_4px_rgba(255,255,255,0.1)] overflow-hidden relative">
+      <div className="max-w-[1200px] mx-auto bg-[#43474e] border-2 sm:border-4 border-[#25272a] rounded-xl sm:rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_2px_4px_rgba(255,255,255,0.1)] overflow-hidden relative">
         
         {/* TOP BAR / LOGO & SYSTEM CONFIG */}
         <div className="bg-[#2d3035] border-b-2 border-[#1e2023] px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -350,7 +568,7 @@ export default function App() {
         )}
 
         {/* COCKPIT GRID SYSTEM */}
-        <div className="p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 bg-[#3d4148]">
+        <div className="p-3 sm:p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 bg-[#3d4148]">
 
           {/* COLUNA ESQUERDA: HUD DISPLAY & CONTROLE DE INPUT (MÓDULO DE SINAL) */}
           <div className="lg:col-span-6 flex flex-col gap-6">
@@ -529,7 +747,7 @@ export default function App() {
                 {/* 3. OSCILLATOR GENERATOR */}
                 {activeTab === 'bip' && (
                   <div className="flex flex-col gap-4">
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                       {(['sine', 'square', 'sawtooth', 'triangle'] as OscillatorType[]).map((type) => (
                         <button
                           key={type}
@@ -545,19 +763,16 @@ export default function App() {
                       ))}
                     </div>
 
-                    <div className="flex items-center justify-between gap-3 bg-[#24272c] p-2.5 rounded border border-[#3e4249]">
-                      <span className="font-mono text-[9px] text-[#8e95a0] uppercase">WIDTH:</span>
-                      <input
-                        type="range"
-                        min="20"
-                        max="500"
+                    <div className="bg-[#24272c] p-2.5 rounded border border-[#3e4249]">
+                      <CustomSlider
+                        min={20}
+                        max={500}
                         value={bipDuration}
-                        onChange={(e) => setBipDuration(parseInt(e.target.value))}
-                        className="flex-1 accent-[#ff9500]"
+                        onChange={(v) => setBipDuration(v)}
+                        label="WIDTH"
+                        unit="MS"
+                        step={1}
                       />
-                      <span className="font-mono text-[10px] text-[#ff9500] font-bold bg-black/60 px-1.5 py-0.5 rounded border border-[#484c54] w-[50px] text-center">
-                        {bipDuration}MS
-                      </span>
                     </div>
 
                     <div className="flex gap-2">
@@ -634,12 +849,38 @@ export default function App() {
                 </span>
               </div>
 
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#1e2024] p-1.5 rounded-lg border border-[#2b2e34] mb-3">
+                {[
+                  ['tone', 'TONE'],
+                  ['mod', 'MOD'],
+                  ['filterfx', 'FILTER/FX'],
+                  ['system', 'SYSTEM'],
+                ].map(([tab, label]) => (
+                  <button
+                    key={tab}
+                    onClick={() => setControlPanelTab(tab as 'tone' | 'mod' | 'filterfx' | 'system')}
+                    className={`font-mono text-[9px] font-black uppercase py-2 rounded border transition-all ${
+                      controlPanelTab === tab
+                        ? 'bg-[#ff9500] text-black border-[#b07200] shadow-[0_0_10px_rgba(255,149,0,0.3)]'
+                        : 'bg-[#24272c] text-[#8e95a0] border-[#3e4249] hover:text-white hover:border-[#59606d]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {controlPanelTab === 'tone' && (
+              <>
               {/* GRUPO DE KNOBS: TIMBRE EQ & EFFECTS */}
-              <div className="flex flex-col gap-4 bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] mb-4">
+              <div className={`flex flex-col gap-3 bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] mb-3 ${!settings.block01Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5 mb-2">
-                  01 // ANALOG TIMBRE EQ & BASS BOOST
+                  <div className="flex items-center justify-between">
+                    <span>01 // ANALOG TIMBRE EQ & BASS BOOST</span>
+                    <button onClick={() => toggleBlock('block01Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block01Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block01Enabled ? 'ON' : 'OFF'}</button>
+                  </div>
                 </div>
-                <div className="grid grid-cols-4 gap-2 justify-items-center">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 justify-items-center">
                   <Knob
                     min={-12}
                     max={12}
@@ -675,11 +916,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-4 bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] mb-4">
+              <div className={`flex flex-col gap-3 bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] mb-3 ${!settings.block02Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5 mb-2">
-                  02 // WAVE MODIFIERS & EFFECTS (FX)
+                  <div className="flex items-center justify-between">
+                    <span>02 // WAVE SOURCE SHAPING</span>
+                    <button onClick={() => toggleBlock('block02Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block02Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block02Enabled ? 'ON' : 'OFF'}</button>
+                  </div>
                 </div>
-                <div className="grid grid-cols-4 gap-2 justify-items-center">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 justify-items-center">
                   <Knob
                     min={0}
                     max={100}
@@ -699,126 +943,527 @@ export default function App() {
                   <Knob
                     min={0}
                     max={100}
-                    value={settings.drive}
-                    onChange={(v) => handleSettingChange('drive', v)}
-                    name="DRIVE"
+                    value={settings.waveshapeAmount}
+                    onChange={(v) => handleSettingChange('waveshapeAmount', v)}
+                    name="SHAPER"
                     unit="%"
                   />
                   <Knob
                     min={0}
                     max={100}
-                    value={settings.bitcrusher}
-                    onChange={(v) => handleSettingChange('bitcrusher', v)}
-                    name="CRUSHER"
+                    value={settings.wavefoldAmount}
+                    onChange={(v) => handleSettingChange('wavefoldAmount', v)}
+                    name="FOLDER"
                     unit="%"
                   />
                 </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 justify-items-center mt-2">
+                  <Knob
+                    min={0}
+                    max={100}
+                    value={settings.pwmAmount}
+                    onChange={(v) => handleSettingChange('pwmAmount', v)}
+                    name="PWM"
+                    unit="%"
+                  />
+                  <Knob
+                    min={0}
+                    max={100}
+                    value={settings.subLevel}
+                    onChange={(v) => handleSettingChange('subLevel', v)}
+                    name="SUB LVL"
+                    unit="%"
+                  />
+                  <Knob
+                    min={0}
+                    max={100}
+                    value={settings.subDrive}
+                    onChange={(v) => handleSettingChange('subDrive', v)}
+                    name="SUB DIRT"
+                    unit="%"
+                  />
+                  <Knob
+                    min={0}
+                    max={100}
+                    value={settings.noiseLevel}
+                    onChange={(v) => handleSettingChange('noiseLevel', v)}
+                    name="NOISE"
+                    unit="%"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-1">
+                  <label className="flex flex-col gap-1 font-mono text-[9px] uppercase text-[#8e95a0]">
+                    PWM TARGET
+                    <select
+                      value={settings.pwmTarget}
+                      onChange={(e) => handleSettingChange('pwmTarget', e.target.value)}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      <option value="square">SQUARE</option>
+                      <option value="triangle">TRIANGLE</option>
+                      <option value="saw">ASYM SAW</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 font-mono text-[9px] uppercase text-[#8e95a0]">
+                    SUB OCTAVE
+                    <select
+                      value={settings.subOctave}
+                      onChange={(e) => handleSettingChange('subOctave', Number(e.target.value))}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      <option value={1}>-1 OCT</option>
+                      <option value={2}>-2 OCT</option>
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 font-mono text-[9px] uppercase text-[#8e95a0]">
+                    NOISE COLOR
+                    <select
+                      value={settings.noiseColor}
+                      onChange={(e) => handleSettingChange('noiseColor', e.target.value)}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      <option value="white">WHITE</option>
+                      <option value="pink">PINK</option>
+                      <option value="blue">BLUE</option>
+                    </select>
+                  </label>
+                </div>
+
+                <WavefolderVisualizer foldAmount={settings.wavefoldAmount} />
               </div>
 
               {/* ENVELOPE CONTROLS (ADSR) & PITCH CALIBRATOR */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                 
                 {/* KEYBOARD ENVELOPE (ADSR) */}
-                <div className="bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3">
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block03Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
-                    03 // KEYBOARD ENVELOPE (ADSR)
+                    <div className="flex items-center justify-between">
+                      <span>03 // KEYBOARD ENVELOPE (ADSR)</span>
+                      <button onClick={() => toggleBlock('block03Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block03Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block03Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
                   </div>
                   
                   {/* ATTACK */}
                   <div className="flex flex-col gap-1">
-                    <div className="flex justify-between font-mono text-[9px] text-[#8e95a0] uppercase font-bold">
-                      <span>KEY ATTACK</span>
-                      <span className="text-[#ff9500]">{settings.keyAttack}MS</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="200"
+                    <CustomSlider
+                      min={0}
+                      max={200}
                       value={settings.keyAttack}
-                      onChange={(e) => handleSettingChange('keyAttack', parseInt(e.target.value))}
-                      className="accent-[#ff9500] cursor-pointer"
+                      onChange={(v) => handleSettingChange('keyAttack', v)}
+                      label="KEY ATTACK"
+                      unit="MS"
+                      density="compact"
                     />
                   </div>
 
                   {/* SUSTAIN */}
                   <div className="flex flex-col gap-1">
-                    <div className="flex justify-between font-mono text-[9px] text-[#8e95a0] uppercase font-bold">
-                      <span>KEY SUSTAIN</span>
-                      <span className="text-[#ff9500]">{settings.keySustain}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
+                    <CustomSlider
+                      min={0}
+                      max={100}
                       value={settings.keySustain}
-                      onChange={(e) => handleSettingChange('keySustain', parseInt(e.target.value))}
-                      className="accent-[#ff9500] cursor-pointer"
+                      onChange={(v) => handleSettingChange('keySustain', v)}
+                      label="KEY SUSTAIN"
+                      unit="%"
+                      density="compact"
                     />
                   </div>
 
                   {/* RELEASE */}
                   <div className="flex flex-col gap-1">
-                    <div className="flex justify-between font-mono text-[9px] text-[#8e95a0] uppercase font-bold">
-                      <span>KEY RELEASE</span>
-                      <span className="text-[#ff9500]">{settings.keyRelease}MS</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="10"
-                      max="500"
+                    <CustomSlider
+                      min={10}
+                      max={500}
                       value={settings.keyRelease}
-                      onChange={(e) => handleSettingChange('keyRelease', parseInt(e.target.value))}
-                      className="accent-[#ff9500] cursor-pointer"
+                      onChange={(v) => handleSettingChange('keyRelease', v)}
+                      label="KEY RELEASE"
+                      unit="MS"
+                      density="compact"
                     />
                   </div>
                 </div>
 
                 {/* PITCH TENSION CALIBRATOR */}
-                <div className="bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3">
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block04Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
-                    04 // PITCH CALIBRATOR
+                    <div className="flex items-center justify-between">
+                      <span>04 // PITCH CALIBRATOR</span>
+                      <button onClick={() => toggleBlock('block04Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block04Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block04Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
                   </div>
 
                   {/* PITCH COARSE (SEMITONES) */}
                   <div className="flex flex-col gap-1">
-                    <div className="flex justify-between font-mono text-[9px] text-[#8e95a0] uppercase font-bold">
-                      <span>COARSE TUNE</span>
-                      <span className="text-[#ff9500]">{settings.pitchCoarse > 0 ? '+' : ''}{settings.pitchCoarse} ST</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-24"
-                      max="24"
-                      step="1"
+                    <CustomSlider
+                      min={-24}
+                      max={24}
+                      step={1}
                       value={settings.pitchCoarse}
-                      onChange={(e) => handleSettingChange('pitchCoarse', parseInt(e.target.value))}
-                      className="accent-[#ff9500] cursor-pointer"
+                      onChange={(v) => handleSettingChange('pitchCoarse', v)}
+                      label="COARSE TUNE"
+                      unit="ST"
+                      density="compact"
                     />
                   </div>
 
                   {/* PITCH FINE (CENTS) */}
                   <div className="flex flex-col gap-1">
-                    <div className="flex justify-between font-mono text-[9px] text-[#8e95a0] uppercase font-bold">
-                      <span>FINE-TUNE</span>
-                      <span className="text-[#ff9500]">{settings.pitchFine > 0 ? '+' : ''}{settings.pitchFine} CTS</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="-50"
-                      max="50"
+                    <CustomSlider
+                      min={-50}
+                      max={50}
                       value={settings.pitchFine}
-                      onChange={(e) => handleSettingChange('pitchFine', parseInt(e.target.value))}
-                      className="accent-[#ff9500] cursor-pointer"
+                      onChange={(v) => handleSettingChange('pitchFine', v)}
+                      label="FINE-TUNE"
+                      unit="CTS"
+                      density="compact"
                     />
                   </div>
                 </div>
 
               </div>
 
+              </>
+              )}
+
+              {controlPanelTab === 'mod' && (
+              <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block05Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>05 // DAHDSR + LOOP ENV</span>
+                      <button onClick={() => toggleBlock('block05Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block05Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block05Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+
+                  {[
+                    ['keyDelay', 'DELAY', 0, 500, 'MS'],
+                    ['keyAttack', 'ATTACK', 0, 200, 'MS'],
+                    ['keyHold', 'HOLD', 0, 500, 'MS'],
+                    ['keyDecay', 'DECAY', 10, 1000, 'MS'],
+                    ['keySustain', 'SUSTAIN', 0, 100, '%'],
+                    ['keyRelease', 'RELEASE', 10, 500, 'MS'],
+                  ].map(([key, label, min, max, unit]) => (
+                    <div className="flex flex-col gap-1" key={String(key)}>
+                      <CustomSlider
+                        min={Number(min)}
+                        max={Number(max)}
+                        value={(settings as any)[key]}
+                        onChange={(v) => handleSettingChange(key as keyof SynthSettings, v)}
+                        label={String(label)}
+                        unit={String(unit)}
+                        density="compact"
+                      />
+                    </div>
+                  ))}
+
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    <button
+                      onClick={() => handleSettingChange('keyLoopEnvelope', !settings.keyLoopEnvelope)}
+                      className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                        settings.keyLoopEnvelope
+                          ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40'
+                          : 'bg-[#24272c] text-[#8e95a0] border-[#3e4249]'
+                      }`}
+                    >
+                      {settings.keyLoopEnvelope ? 'ENV LOOP ON' : 'ENV LOOP OFF'}
+                    </button>
+                    <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      <CustomSlider
+                        min={1}
+                        max={20}
+                        step={0.5}
+                        value={settings.keyLoopRate}
+                        onChange={(v) => handleSettingChange('keyLoopRate', v)}
+                        label="LOOP RATE"
+                        unit="HZ"
+                        density="compact"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block06Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>06 // LFO ENGINE</span>
+                      <button onClick={() => toggleBlock('block06Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block06Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block06Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+
+                  {(['lfo1', 'lfo2'] as const).map((lfo) => (
+                    <div key={lfo} className="bg-[#24272c] p-2 rounded border border-[#30333a] flex flex-col gap-2">
+                      <span className="font-mono text-[9px] text-white uppercase font-bold">{lfo.toUpperCase()}</span>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                        <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                          <CustomSlider
+                            min={0.1}
+                            max={20}
+                            step={0.1}
+                            value={settings[lfo].rate}
+                            onChange={(v) => handleLfoChange(lfo, 'rate', v)}
+                            label="RATE"
+                            unit="HZ"
+                            orientation="vertical"
+                            density="compact"
+                            className="items-center"
+                          />
+                        </div>
+                        <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                          <CustomSlider
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={settings[lfo].depth}
+                            onChange={(v) => handleLfoChange(lfo, 'depth', v)}
+                            label="DEPTH"
+                            unit="%"
+                            orientation="vertical"
+                            density="compact"
+                            className="items-center"
+                          />
+                        </div>
+                        <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                          WAVE
+                          <select
+                            value={settings[lfo].waveform}
+                            onChange={(e) => handleLfoChange(lfo, 'waveform', e.target.value)}
+                            className="bg-[#2b2e34] border border-[#3e4249] rounded px-1 py-1 text-white"
+                          >
+                            {lfoWaveforms.map((w) => (
+                              <option key={w} value={w}>{w.toUpperCase()}</option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+
+                      <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                        CUSTOM SHAPE (CSV -1..1)
+                        <input
+                          type="text"
+                          defaultValue={settings[lfo].customShape.join(',')}
+                          onBlur={(e) => handleLfoCustomShape(lfo, e.target.value)}
+                          className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                        />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 mb-3 ${!settings.block07Enabled ? 'opacity-55' : ''}`}>
+                <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                  <div className="flex items-center justify-between">
+                    <span>07 // MOD MATRIX</span>
+                    <button onClick={() => toggleBlock('block07Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block07Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block07Enabled ? 'ON' : 'OFF'}</button>
+                  </div>
+                </div>
+                {settings.modMatrix.map((slot, idx) => (
+                  <div key={idx} className="grid grid-cols-1 md:grid-cols-5 gap-2 bg-[#24272c] rounded border border-[#30333a] p-2">
+                    <button
+                      onClick={() => handleModMatrixChange(idx, 'enabled', !slot.enabled)}
+                      className={`font-mono text-[9px] font-black uppercase rounded border py-1 ${
+                        slot.enabled ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                      }`}
+                    >
+                      {slot.enabled ? 'ON' : 'OFF'}
+                    </button>
+                    <select
+                      value={slot.source}
+                      onChange={(e) => handleModMatrixChange(idx, 'source', e.target.value)}
+                      className="font-mono text-[9px] bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white uppercase"
+                    >
+                      {modSources.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <span className="font-mono text-[8px] text-[#8e95a0] uppercase flex items-center justify-center">TO</span>
+                    <select
+                      value={slot.destination}
+                      onChange={(e) => handleModMatrixChange(idx, 'destination', e.target.value)}
+                      className="font-mono text-[9px] bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white uppercase"
+                    >
+                      {modDestinations.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                    <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      <CustomSlider
+                        min={-100}
+                        max={100}
+                        value={slot.amount}
+                        onChange={(v) => handleModMatrixChange(idx, 'amount', v)}
+                        label="AMOUNT"
+                        density="compact"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              </>
+
+              )}
+
+              {controlPanelTab === 'filterfx' && (
+              <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block08Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>08 // FILTER PERSONALITY</span>
+                      <button onClick={() => toggleBlock('block08Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block08Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block08Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 justify-items-center">
+                    <Knob min={40} max={16000} step={10} value={settings.filterCutoff} onChange={(v) => handleSettingChange('filterCutoff', v)} name="CUTOFF" unit="Hz" />
+                    <Knob min={1} max={24} step={0.1} value={settings.filterResonance} onChange={(v) => handleSettingChange('filterResonance', v)} name="RESON" unit="Q" />
+                    <Knob min={0} max={100} value={settings.preFilterDrive} onChange={(v) => handleSettingChange('preFilterDrive', v)} name="PREDRV" unit="%" />
+                    <Knob min={0} max={100} value={settings.postFilterDrive} onChange={(v) => handleSettingChange('postFilterDrive', v)} name="POSTDRV" unit="%" />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      ROUTING
+                      <select
+                        value={settings.filterRouting}
+                        onChange={(e) => handleSettingChange('filterRouting', e.target.value)}
+                        className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                      >
+                        <option value="series">SERIES</option>
+                        <option value="parallel">PARALLEL</option>
+                      </select>
+                    </label>
+                    <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1 col-span-2">
+                      <CustomSlider
+                        min={0}
+                        max={100}
+                        value={settings.filterParallelBlend}
+                        onChange={(v) => handleSettingChange('filterParallelBlend', v)}
+                        label="PARALLEL BLEND LP/HP"
+                        unit="%"
+                        density="compact"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      <CustomSlider
+                        min={0}
+                        max={100}
+                        value={settings.selfOscillation}
+                        onChange={(v) => handleSettingChange('selfOscillation', v)}
+                        label="SELF OSC"
+                        unit="%"
+                        orientation="vertical"
+                        density="compact"
+                        className="items-center"
+                      />
+                  </div>
+
+                  <FilterResponseVisualizer
+                    cutoff={settings.filterCutoff}
+                    resonance={settings.filterResonance}
+                    routing={settings.filterRouting}
+                    parallelBlend={settings.filterParallelBlend}
+                  />
+                </div>
+
+                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block09Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>09 // DRIFT + UNISON</span>
+                      <button onClick={() => toggleBlock('block09Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block09Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block09Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 justify-items-center">
+                    <Knob min={0} max={100} value={settings.driftAmount} onChange={(v) => handleSettingChange('driftAmount', v)} name="DRIFT" unit="%" />
+                    <Knob min={0} max={100} value={settings.driftEnvJitter} onChange={(v) => handleSettingChange('driftEnvJitter', v)} name="AGE ENV" unit="%" />
+                    <Knob min={0} max={100} value={settings.unisonDetune} onChange={(v) => handleSettingChange('unisonDetune', v)} name="DETUNE" unit="cts" />
+                    <Knob min={0} max={100} value={settings.unisonStereoSpread} onChange={(v) => handleSettingChange('unisonStereoSpread', v)} name="SPREAD" unit="%" />
+                  </div>
+
+                  <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                    UNISON VOICES
+                    <select
+                      value={settings.unisonVoices}
+                      onChange={(e) => handleSettingChange('unisonVoices', Number(e.target.value))}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      <option value={1}>1</option>
+                      <option value={2}>2</option>
+                      <option value={4}>4</option>
+                      <option value={8}>8</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 mb-3 ${!settings.block10Enabled ? 'opacity-55' : ''}`}>
+                <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                  <div className="flex items-center justify-between">
+                    <span>10 // FX: CRUSHER + CHORUS + RING MOD + GATER</span>
+                    <button onClick={() => toggleBlock('block10Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block10Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block10Enabled ? 'ON' : 'OFF'}</button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 sm:gap-2 justify-items-center">
+                  <Knob min={0} max={100} value={settings.drive} onChange={(v) => handleSettingChange('drive', v)} name="LEGACYDRV" unit="%" />
+                  <Knob min={0} max={100} value={settings.bitcrusher} onChange={(v) => handleSettingChange('bitcrusher', v)} name="BITCRUSH" unit="%" />
+                  <Knob min={0} max={100} value={settings.sampleRateReduction} onChange={(v) => handleSettingChange('sampleRateReduction', v)} name="SR RED" unit="%" />
+                  <Knob min={0} max={100} value={settings.chorusMix} onChange={(v) => handleSettingChange('chorusMix', v)} name="CHORUS" unit="%" />
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 sm:gap-2 justify-items-center">
+                  <Knob min={0.1} max={8} step={0.1} value={settings.chorusRate} onChange={(v) => handleSettingChange('chorusRate', v)} name="CH RATE" unit="Hz" />
+                  <Knob min={0} max={100} value={settings.chorusDepth} onChange={(v) => handleSettingChange('chorusDepth', v)} name="CH DEPTH" unit="%" />
+                  <Knob min={0} max={100} value={settings.ringModAmount} onChange={(v) => handleSettingChange('ringModAmount', v)} name="RING AMT" unit="%" />
+                  <Knob min={10} max={5000} step={10} value={settings.ringModFreq} onChange={(v) => handleSettingChange('ringModFreq', v)} name="RING FREQ" unit="Hz" />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 bg-[#24272c] p-2 rounded border border-[#30333a]">
+                  <button
+                    onClick={() => handleSettingChange('gaterEnabled', !settings.gaterEnabled)}
+                    className={`font-mono text-[9px] font-black uppercase rounded border py-2 ${
+                      settings.gaterEnabled
+                        ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40'
+                        : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                    }`}
+                  >
+                    {settings.gaterEnabled ? 'GATER ON' : 'GATER BYPASS'}
+                  </button>
+
+                  <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                    GATE WAVE
+                    <select
+                      value={settings.gaterWaveform}
+                      onChange={(e) => handleSettingChange('gaterWaveform', e.target.value)}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      <option value="square">SQUARE</option>
+                      <option value="sine">SINE</option>
+                      <option value="triangle">TRIANGLE</option>
+                      <option value="sawtooth">SAW / PUMP</option>
+                    </select>
+                  </label>
+
+                  <Knob min={0.1} max={30} step={0.1} value={settings.gaterRate} onChange={(v) => handleSettingChange('gaterRate', v)} name="GATE RATE" unit="Hz" />
+                  <Knob min={0} max={100} value={settings.gaterDepth} onChange={(v) => handleSettingChange('gaterDepth', v)} name="GATE DEPTH" unit="%" />
+                </div>
+              </div>
+
+              </>
+
+              )}
+
+              {controlPanelTab === 'system' && (
+              <>
+
               {/* SWITCHES & ACTUATORS */}
               <div className="bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3">
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5 mb-1">
-                  05 // ENGINE ACTUATORS & SYSTEM SWITCHES
+                  11 // ENGINE ACTUATORS & SYSTEM SWITCHES
                 </div>
                 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -951,6 +1596,9 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              </>
+              )}
 
             </div>
           </div>

@@ -92,12 +92,22 @@ export const Knob: React.FC<KnobProps> = ({
   });
 
   return (
-    <div className="flex flex-col items-center gap-1.5 w-[96px] select-none p-2 bg-[#2d3137] rounded-lg border border-[#424750] shadow-md relative overflow-hidden">
+    <div className="flex flex-col items-center gap-1.5 w-[82px] sm:w-[96px] select-none p-1.5 sm:p-2 bg-[#2d3137] rounded-lg border border-[#424750] shadow-md relative overflow-hidden">
       {/* Detalhes de aviação/industrial no fundo do knob */}
       <div className="absolute top-0 left-0 w-full h-[3px] bg-[#ff7b00] opacity-80" />
       
       {/* Container do knob com as marcações radial SVG */}
-      <div className="relative w-16 h-16 flex items-center justify-center">
+      <div className="relative w-14 h-14 sm:w-16 sm:h-16 flex items-center justify-center">
+        {/* Halo LED proporcional ao valor */}
+        <div
+          className="absolute inset-[4px] rounded-full pointer-events-none"
+          style={{
+            background: `conic-gradient(#ff7b00 ${pct * 360}deg, rgba(66,72,80,0.35) ${pct * 360}deg 360deg)`,
+            boxShadow: `0 0 ${4 + pct * 10}px rgba(255,123,0,${0.2 + pct * 0.5})`,
+            opacity: 0.9,
+          }}
+        />
+
         {/* SVG de ticks de fundo */}
         <svg className="absolute inset-0 w-full h-full pointer-events-none">
           {ticks.map((tick, idx) => (
@@ -118,11 +128,11 @@ export const Knob: React.FC<KnobProps> = ({
         {/* Corpo do Knob Físico */}
         <div
           ref={knobRef}
-          className={`w-11 h-11 rounded-full border border-[#1b1c1e] relative cursor-grab active:cursor-grabbing shadow-[inset_0_2px_4px_rgba(255,255,255,0.1),0_4px_8px_rgba(0,0,0,0.8)] flex items-center justify-center transition-all ${
+          className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full border border-[#1b1c1e] relative cursor-grab active:cursor-grabbing shadow-[inset_0_2px_4px_rgba(255,255,255,0.1),0_4px_8px_rgba(0,0,0,0.8)] flex items-center justify-center transition-all ${
             isDragging ? 'scale-[1.04] shadow-[0_0_12px_rgba(255,123,0,0.3)]' : 'hover:border-[#595f68]'
           }`}
           style={{
-            background: 'radial-gradient(circle at 35% 30%, #464b53 0%, #212428 75%, #15171a 100%)',
+            background: 'radial-gradient(circle at 32% 28%, #68707d 0%, #2f3640 40%, #1f242c 72%, #14171b 100%)',
             touchAction: 'none',
           }}
           onPointerDown={handlePointerDown}
@@ -140,7 +150,7 @@ export const Knob: React.FC<KnobProps> = ({
 
           {/* Ponteiro / Marcador de Posição da Aviação */}
           <div
-            className="absolute top-0.5 left-1/2 w-1.5 h-1.5 rounded-full bg-[#ff7b00] origin-[50%_21.5px] shadow-[0_0_8px_#ff7b00]"
+            className="absolute top-0.5 left-1/2 w-1.5 h-1.5 rounded-full bg-[#ff7b00] origin-[50%_19.5px] sm:origin-[50%_21.5px] shadow-[0_0_8px_#ff7b00]"
             style={{
               transform: `translateX(-50%) rotate(${rotAngle}deg)`,
             }}
@@ -149,12 +159,12 @@ export const Knob: React.FC<KnobProps> = ({
       </div>
       
       {/* Nome legível do controlador */}
-      <div className="font-sans text-[9px] font-bold text-[#8d95a1] tracking-wider uppercase text-center truncate w-full border-t border-[#3e434b] pt-1">
+      <div className="font-sans text-[8px] sm:text-[9px] font-bold text-[#8d95a1] tracking-wider uppercase text-center truncate w-full border-t border-[#3e434b] pt-1">
         {name}
       </div>
       
       {/* Display LED do valor do knob */}
-      <div className="font-mono text-[10px] text-[#ffae00] bg-black/80 px-1.5 py-0.5 rounded border border-[#1f2125] w-full text-center tracking-tight font-bold shadow-inner">
+      <div className="font-mono text-[9px] sm:text-[10px] text-[#ffae00] bg-black/80 px-1.5 py-0.5 rounded border border-[#1f2125] w-full text-center tracking-tight font-bold shadow-inner">
         {formatValue()}
       </div>
     </div>
