@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Share+Tech+Mono&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Chakra Petch", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Orbitron", sans-serif;
+  --font-mono: "JetBrains Mono", "Share Tech Mono", ui-monospace, monospace;
+}
+
+/* Custom Cockpit style styles */
+@keyframes blink-led {
+  0%, 100% { opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
+  50% { opacity: 0.3; filter: drop-shadow(0 0 1px currentColor); }
+}
+
+.animate-blink {
+  animation: blink-led 1s infinite;
+}
+
+/* Warning stripes pattern */
+.warning-stripes {
+  background: repeating-linear-gradient(
+    -45deg,
+    #1e1c18,
+    #1e1c18 8px,
+    #ffae00 8px,
+    #ffae00 16px
+  );
+}
+
+.warning-stripes-dark {
+  background: repeating-linear-gradient(
+    -45deg,
+    #111112,
+    #111112 10px,
+    #2a2d31 10px,
+    #2a2d31 20px
+  );
+}
+
+/* Custom scrollbar for retro panels */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #121315;
+}
+::-webkit-scrollbar-thumb {
+  background: #3e4249;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #ff7b00;
+}

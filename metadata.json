@@ -1,0 +1,6 @@
+{
+  "name": "Timbr3",
+  "description": "Fazedor de Synth que transforma qualquer som curto em nota musical afinada, baseado em repetição de frequência.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
