@@ -20,6 +20,7 @@ import { BlockOscillatorPreview } from './components/BlockOscillatorPreview';
 import { CustomSlider } from './components/CustomSlider';
 import { SynthEngine } from './audio/SynthEngine';
 import { AudioSampleState, SynthSettings, NoteInfo, ModDestination, ModSource, LfoWaveform, HarmonyMode, LoopPattern, SourceWaveEffect, SourceWaveMode, ToneGeneratorType } from './types';
+import { deletePreset, listPresets, savePreset, getAnonId, type PresetRecord } from './services/presetsApi';
 
 type EqPresetKey = 'balanced' | 'warm' | 'hifi' | 'smile' | 'midPunch' | 'darkVintage';
 
@@ -168,6 +169,10 @@ export default function App() {
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [presetName, setPresetName] = useState('Meu Preset');
+  const [savedPresets, setSavedPresets] = useState<PresetRecord[]>([]);
+  const [presetsBusy, setPresetsBusy] = useState(false);
+  const [presetsStatus, setPresetsStatus] = useState<string | null>(null);
 
   // Estados de afinação
   const [targetNote, setTargetNote] = useState<NoteInfo>({ note: 'C3', hz: 130.81 });
@@ -196,6 +201,24 @@ export default function App() {
     return () => {
       engine.stopAllNotes(defaultSettings);
     };
+  }, []);
+
+  useEffect(() => {
+    const loadInitialPresets = async () => {
+      try {
+        const presets = await listPresets();
+        setSavedPresets(presets);
+        if (presets.length > 0) {
+          setPresetsStatus(`Perfil anônimo: ${getAnonId().slice(0, 8)}... · ${presets.length} presets`);
+        } else {
+          setPresetsStatus(`Perfil anônimo: ${getAnonId().slice(0, 8)}... · sem presets salvos`);
+        }
+      } catch {
+        setPresetsStatus('API de presets indisponível. Configure VITE_PRESET_API_BASE.');
+      }
+    };
+
+    loadInitialPresets();
   }, []);
 
   // Timer de gravação
@@ -763,6 +786,62 @@ export default function App() {
     setLastPlayedNote('—');
   };
 
+  const refreshPresets = async () => {
+    const presets = await listPresets();
+    setSavedPresets(presets);
+    setPresetsStatus(`Perfil anônimo: ${getAnonId().slice(0, 8)}... · ${presets.length} presets`);
+  };
+
+  const handleSavePreset = async () => {
+    const safeName = presetName.trim();
+    if (!safeName) {
+      setErrorMessage('Defina um nome para salvar o preset.');
+      return;
+    }
+
+    setPresetsBusy(true);
+    setErrorMessage(null);
+    try {
+      await savePreset(safeName, settings);
+      await refreshPresets();
+      showInfo(`Preset "${safeName}" salvo com sucesso.`);
+    } catch (err) {
+      setErrorMessage('Erro ao salvar preset no perfil anônimo.');
+    } finally {
+      setPresetsBusy(false);
+    }
+  };
+
+  const handleLoadPreset = (preset: PresetRecord) => {
+    const merged: SynthSettings = {
+      ...defaultSettings,
+      ...preset.payload,
+      lfo1: { ...defaultSettings.lfo1, ...(preset.payload?.lfo1 ?? {}) },
+      lfo2: { ...defaultSettings.lfo2, ...(preset.payload?.lfo2 ?? {}) },
+      modMatrix: Array.isArray(preset.payload?.modMatrix)
+        ? preset.payload.modMatrix.map((slot) => ({ ...slot }))
+        : defaultSettings.modMatrix.map((slot) => ({ ...slot })),
+    };
+
+    setSettings(merged);
+    synthRef.current?.updateActiveVoices(getEffectiveSettings(merged));
+    showInfo(`Preset "${preset.name}" carregado.`);
+  };
+
+  const handleDeletePreset = async (presetId: string) => {
+    setPresetsBusy(true);
+    setErrorMessage(null);
+    try {
+      await deletePreset(presetId);
+      await refreshPresets();
+      showInfo('Preset removido.');
+    } catch {
+      setErrorMessage('Erro ao remover preset.');
+    } finally {
+      setPresetsBusy(false);
+    }
+  };
+
   const modSources: ModSource[] = ['lfo1', 'lfo2', 'env', 'velocity', 'keytrack', 'random'];
   const modDestinations: ModDestination[] = [
     'pitch',
@@ -1170,7 +1249,7 @@ export default function App() {
                   ['tone', 'SOURCE'],
                   ['mod', 'MOTION'],
                   ['filterfx', 'FILTER/SPACE'],
-                  ['system', 'SYSTEM'],
+                  ['system', 'SYSTEM/PRESETS'],
                 ].map(([tab, label]) => (
                   <button
                     key={tab}
@@ -1184,6 +1263,16 @@ export default function App() {
                     {label}
                   </button>
                 ))}
+              </div>
+
+              <div className="mb-3 flex items-center justify-between bg-[#1e2024] border border-[#2b2e34] rounded-lg px-3 py-2">
+                <span className="font-mono text-[9px] text-[#8e95a0] uppercase">Preset manager fica na aba system/presets</span>
+                <button
+                  onClick={() => setControlPanelTab('system')}
+                  className="font-mono text-[9px] font-black uppercase px-2.5 py-1.5 rounded border bg-[#34c759]/12 text-[#34c759] border-[#34c759]/40"
+                >
+                  Abrir Presets
+                </button>
               </div>
 
               {controlPanelTab === 'tone' && (
@@ -2146,6 +2235,70 @@ export default function App() {
                       <div className="font-mono text-[8px] text-center text-[#ff3b30] font-black">{settings.masterGain}%</div>
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div className="interactive-card flex flex-col gap-3 bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] mt-4">
+                <div className="font-mono text-[8px] text-[#34c759] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5">
+                  12 // ANON PRESET MEMORY (NO LOGIN)
+                </div>
+
+                <div className="font-mono text-[8px] text-[#8e95a0] uppercase">
+                  {presetsStatus ?? `Perfil anônimo: ${getAnonId().slice(0, 8)}...`}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto] gap-2">
+                  <input
+                    type="text"
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                    placeholder="nome do preset"
+                    className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-2 text-white font-mono text-[10px]"
+                  />
+                  <button
+                    onClick={handleSavePreset}
+                    disabled={presetsBusy}
+                    className="font-mono text-[9px] font-black uppercase px-3 py-2 rounded border bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40 disabled:opacity-50"
+                  >
+                    SAVE
+                  </button>
+                  <button
+                    onClick={refreshPresets}
+                    disabled={presetsBusy}
+                    className="font-mono text-[9px] font-black uppercase px-3 py-2 rounded border bg-black/40 text-[#8e95a0] border-[#3e4249] disabled:opacity-50"
+                  >
+                    REFRESH
+                  </button>
+                </div>
+
+                <div className="max-h-52 overflow-auto border border-[#2b2e34] rounded">
+                  {savedPresets.length === 0 ? (
+                    <div className="font-mono text-[9px] text-[#8e95a0] p-3 uppercase">
+                      Sem presets no perfil atual.
+                    </div>
+                  ) : (
+                    <div className="flex flex-col">
+                      {savedPresets.map((preset) => (
+                        <div key={preset.id} className="grid grid-cols-[1fr_auto_auto] items-center gap-2 px-2 py-2 border-b border-[#2b2e34] last:border-b-0">
+                          <div className="font-mono text-[9px] text-white uppercase truncate" title={preset.name}>{preset.name}</div>
+                          <button
+                            onClick={() => handleLoadPreset(preset)}
+                            disabled={presetsBusy}
+                            className="font-mono text-[8px] font-black uppercase px-2 py-1 rounded border bg-[#ff9500]/15 text-[#ffae00] border-[#ffae00]/40 disabled:opacity-50"
+                          >
+                            LOAD
+                          </button>
+                          <button
+                            onClick={() => handleDeletePreset(preset.id)}
+                            disabled={presetsBusy}
+                            className="font-mono text-[8px] font-black uppercase px-2 py-1 rounded border bg-[#ff3b30]/10 text-[#ff6b62] border-[#ff3b30]/40 disabled:opacity-50"
+                          >
+                            DEL
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
