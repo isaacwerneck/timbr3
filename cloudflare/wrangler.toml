@@ -5,7 +5,7 @@ workers_dev = true
 
 [vars]
 # Replace with your frontend origin in production, e.g. https://app.timbr3.com
-ALLOWED_ORIGIN = "http://localhost:3000"
+ALLOWED_ORIGIN = "https://timbr3.netlify.app"
 FIREBASE_PROJECT_ID = "timbr3synth"
 # Use your Firebase service account client_email from the JSON key.
 FIREBASE_CLIENT_EMAIL = "firebase-adminsdk-fbsvc@timbr3synth.iam.gserviceaccount.com"
