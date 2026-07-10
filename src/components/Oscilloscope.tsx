@@ -10,6 +10,7 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({ synthRef, systemPowe
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const animationRef = useRef<number | null>(null);
+  const lastFrameRef = useRef(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -42,8 +43,14 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({ synthRef, systemPowe
     let bufferLength = 0;
     let phase = 0; // for standby signal
 
-    const draw = () => {
+    const draw = (time: number) => {
       if (!canvas || !ctx) return;
+      if (time - lastFrameRef.current < 33) {
+        animationRef.current = requestAnimationFrame(draw);
+        return;
+      }
+      lastFrameRef.current = time;
+
       const width = canvas.width / window.devicePixelRatio;
       const height = canvas.height / window.devicePixelRatio;
 
@@ -162,16 +169,16 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({ synthRef, systemPowe
         }
       } else {
         // Render beautiful standby signal (slow drifting sine wave with small noise)
-        const points = 120;
+        const points = 72;
         const sliceWidth = width / points;
-        phase += 0.05;
+        phase += 0.03;
 
         for (let i = 0; i < points; i++) {
           const x = i * sliceWidth;
           // Drifting waveform made of two sinusoids for complex retro radar style
           const angle1 = (i / points) * Math.PI * 4 + phase;
           const angle2 = (i / points) * Math.PI * 8 - phase * 0.5;
-          const noise = (Math.random() - 0.5) * 0.02; // tape hiss simulation
+          const noise = (Math.random() - 0.5) * 0.01; // tape hiss simulation
           
           const v = (Math.sin(angle1) * 0.06 + Math.cos(angle2) * 0.03 + noise);
           const y = (height / 2) + v * (height / 2);
@@ -193,7 +200,7 @@ export const Oscilloscope: React.FC<OscilloscopeProps> = ({ synthRef, systemPowe
       animationRef.current = requestAnimationFrame(draw);
     };
 
-    draw();
+    animationRef.current = requestAnimationFrame(draw);
 
     return () => {
       if (animationRef.current) {

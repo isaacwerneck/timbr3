@@ -7,8 +7,13 @@ export interface AudioSampleState {
 
 export type NoiseColor = 'white' | 'pink' | 'blue';
 export type PwmTarget = 'square' | 'triangle' | 'saw';
+export type SourceWaveEffect = 'off' | 'sine' | 'triangle' | 'sawtooth' | 'square' | 'pulse';
+export type SourceWaveMode = 'clean' | 'aggressive';
+export type ToneGeneratorType = OscillatorType | 'pulse' | 'noise' | 'supersaw' | 'fm-bell' | 'pluck';
 export type LfoWaveform = 'sine' | 'triangle' | 'sawtooth' | 'square' | 'sample-hold' | 'custom';
 export type GaterWaveform = 'square' | 'sine' | 'triangle' | 'sawtooth';
+export type LoopPattern = 'up' | 'down' | 'updown' | 'random';
+export type HarmonyMode = 'major' | 'minor';
 export type FilterRouting = 'series' | 'parallel';
 export type ModSource = 'lfo1' | 'lfo2' | 'env' | 'velocity' | 'keytrack' | 'random';
 export type ModDestination =
@@ -73,6 +78,9 @@ export interface SynthSettings {
   // Fonte / osciladores
   wavefoldAmount: number; // 0..100
   waveshapeAmount: number; // 0..100
+  sourceWaveEffect: SourceWaveEffect;
+  sourceWaveAmount: number; // 0..100
+  sourceWaveMode: SourceWaveMode;
   pwmAmount: number; // 0..100
   pwmTarget: PwmTarget;
   subLevel: number; // 0..100
@@ -92,6 +100,17 @@ export interface SynthSettings {
   keyDecay: number; // 0..1000ms
   keyLoopEnvelope: boolean;
   keyLoopRate: number; // 1..20Hz
+  loopInterleaveEnabled: boolean;
+  loopLatchEnabled: boolean;
+  loopStepRate: number; // 0.5..20Hz
+  loopRangeOctaves: number; // 0..3
+  loopPattern: LoopPattern;
+  loopHarmonyEnabled: boolean;
+  loopHarmonyMode: HarmonyMode;
+  loopCompatThird: boolean;
+  loopCompatFifth: boolean;
+  loopOctaveUp: boolean;
+  loopOctaveDown: boolean;
 
   // Filtros com personalidade
   filterCutoff: number; // 40..16000Hz

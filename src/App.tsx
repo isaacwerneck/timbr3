@@ -15,9 +15,22 @@ import { Keyboard } from './components/Keyboard';
 import { Oscilloscope } from './components/Oscilloscope';
 import { WavefolderVisualizer } from './components/WavefolderVisualizer';
 import { FilterResponseVisualizer } from './components/FilterResponseVisualizer';
+import { EqResponseVisualizer } from './components/EqResponseVisualizer';
+import { BlockOscillatorPreview } from './components/BlockOscillatorPreview';
 import { CustomSlider } from './components/CustomSlider';
 import { SynthEngine } from './audio/SynthEngine';
-import { AudioSampleState, SynthSettings, NoteInfo, ModDestination, ModSource, LfoWaveform } from './types';
+import { AudioSampleState, SynthSettings, NoteInfo, ModDestination, ModSource, LfoWaveform, HarmonyMode, LoopPattern, SourceWaveEffect, SourceWaveMode, ToneGeneratorType } from './types';
+
+type EqPresetKey = 'balanced' | 'warm' | 'hifi' | 'smile' | 'midPunch' | 'darkVintage';
+
+const eqPresets: Array<{ key: EqPresetKey; label: string; lowGain: number; midGain: number; highGain: number; bassBoost: number }> = [
+  { key: 'balanced', label: 'BALANCED', lowGain: 0, midGain: 2, highGain: -3, bassBoost: 0 },
+  { key: 'warm', label: 'WARM', lowGain: 2.5, midGain: -0.5, highGain: -4.5, bassBoost: 2 },
+  { key: 'hifi', label: 'HI-FI', lowGain: 1, midGain: 0, highGain: 3, bassBoost: 0.5 },
+  { key: 'smile', label: 'SMILE', lowGain: 3, midGain: -2.5, highGain: 2.5, bassBoost: 1.5 },
+  { key: 'midPunch', label: 'MID PUNCH', lowGain: -1, midGain: 4, highGain: -1.5, bassBoost: 0 },
+  { key: 'darkVintage', label: 'DARK VINTAGE', lowGain: 2, midGain: 1, highGain: -6, bassBoost: 2.5 },
+];
 
 // Configurações padrão do Sintetizador
 const defaultSettings: SynthSettings = {
@@ -51,6 +64,9 @@ const defaultSettings: SynthSettings = {
   masterGain: 80,
   wavefoldAmount: 0,
   waveshapeAmount: 0,
+  sourceWaveEffect: 'off',
+  sourceWaveAmount: 0,
+  sourceWaveMode: 'clean',
   pwmAmount: 0,
   pwmTarget: 'square',
   subLevel: 0,
@@ -81,6 +97,17 @@ const defaultSettings: SynthSettings = {
   keyDecay: 200,
   keyLoopEnvelope: false,
   keyLoopRate: 4,
+  loopInterleaveEnabled: false,
+  loopLatchEnabled: false,
+  loopStepRate: 8,
+  loopRangeOctaves: 1,
+  loopPattern: 'up',
+  loopHarmonyEnabled: false,
+  loopHarmonyMode: 'minor',
+  loopCompatThird: true,
+  loopCompatFifth: false,
+  loopOctaveUp: false,
+  loopOctaveDown: false,
   filterCutoff: 5200,
   filterResonance: 4,
   filterRouting: 'series',
@@ -113,13 +140,19 @@ const Screw = () => (
 
 export default function App() {
   const synthRef = useRef<SynthEngine | null>(null);
+  const loopStepIndexRef = useRef(0);
+  const loopDirectionRef = useRef<1 | -1>(1);
+  const loopCurrentMidiRef = useRef<number | null>(null);
 
   // Estados principais
   const [settings, setSettings] = useState<SynthSettings>(defaultSettings);
   const [activeTab, setActiveTab] = useState<'rec' | 'upload' | 'bip'>('rec');
   const [controlPanelTab, setControlPanelTab] = useState<'tone' | 'mod' | 'filterfx' | 'system'>('tone');
-  const [bipType, setBipType] = useState<OscillatorType>('sine');
+  const [eqPreset, setEqPreset] = useState<EqPresetKey | 'custom'>('balanced');
+  const [eqPresetMenuOpen, setEqPresetMenuOpen] = useState(false);
+  const [bipType, setBipType] = useState<ToneGeneratorType>('sine');
   const [bipDuration, setBipDuration] = useState<number>(180); // ms
+  const [bipBaseFreq, setBipBaseFreq] = useState<number>(220);
 
   // Estados da amostra carregada
   const [sampleState, setSampleState] = useState<AudioSampleState>({
@@ -139,6 +172,7 @@ export default function App() {
   // Estados de afinação
   const [targetNote, setTargetNote] = useState<NoteInfo>({ note: 'C3', hz: 130.81 });
   const [activeMidiNotes, setActiveMidiNotes] = useState<Set<number>>(new Set());
+  const [latchedMidiNotes, setLatchedMidiNotes] = useState<Set<number>>(new Set());
   const [lastPlayedNote, setLastPlayedNote] = useState<string>('—');
 
   // Trava de segurança (cockpit red guards)
@@ -178,7 +212,180 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isRecording]);
 
+  useEffect(() => {
+    const active = settings.loopInterleaveEnabled && settings.block05Enabled;
+    if (!active) {
+      loopStepIndexRef.current = 0;
+      loopDirectionRef.current = 1;
+      return;
+    }
+
+    synthRef.current?.stopAllNotes(getEffectiveSettings(settings));
+
+    return () => {
+      if (loopCurrentMidiRef.current !== null) {
+        synthRef.current?.stopNote(loopCurrentMidiRef.current, getEffectiveSettings(settings));
+        loopCurrentMidiRef.current = null;
+      }
+    };
+  }, [settings.loopInterleaveEnabled, settings.block05Enabled]);
+
+  useEffect(() => {
+    if (!settings.loopLatchEnabled || !settings.loopInterleaveEnabled || !settings.block05Enabled) {
+      setLatchedMidiNotes(new Set());
+    }
+  }, [settings.loopLatchEnabled, settings.loopInterleaveEnabled, settings.block05Enabled]);
+
+  useEffect(() => {
+    const interleaveActive = settings.loopInterleaveEnabled && settings.block05Enabled && systemPower;
+    if (!interleaveActive) {
+      return;
+    }
+
+    const heldNotes = Array.from(activeMidiNotes.values()) as number[];
+    heldNotes.sort((a, b) => a - b);
+    const latchedNotes = Array.from(latchedMidiNotes.values()) as number[];
+    latchedNotes.sort((a, b) => a - b);
+    const sourceNotes = settings.loopLatchEnabled
+      ? Array.from(new Set([...heldNotes, ...latchedNotes])).sort((a, b) => a - b)
+      : heldNotes;
+
+    const buildLoopPool = (): number[] => {
+      if (sourceNotes.length === 0) return [];
+
+      const pool = new Set<number>();
+      sourceNotes.forEach((midi) => pool.add(midi));
+
+      const generated = new Set<number>();
+
+      if (settings.loopHarmonyEnabled) {
+        const third = settings.loopHarmonyMode === 'major' ? 4 : 3;
+        if (settings.loopCompatThird) {
+          sourceNotes.forEach((midi) => generated.add(midi + third));
+        }
+        if (settings.loopCompatFifth) {
+          sourceNotes.forEach((midi) => generated.add(midi + 7));
+        }
+      }
+
+      if (settings.loopOctaveUp) {
+        sourceNotes.forEach((midi) => generated.add(midi + 12));
+      }
+      if (settings.loopOctaveDown) {
+        sourceNotes.forEach((midi) => generated.add(midi - 12));
+      }
+
+      const rootMidi = sourceNotes[0];
+      const maxDistance = settings.loopRangeOctaves * 12;
+      generated.forEach((midi) => {
+        if (Math.abs(midi - rootMidi) <= maxDistance) {
+          pool.add(midi);
+        }
+      });
+
+      return Array.from(pool.values())
+        .filter((midi) => midi >= 24 && midi <= 108)
+        .sort((a, b) => a - b);
+    };
+
+    const midiToFreq = (midi: number) => 440 * Math.pow(2, (midi - 69) / 12);
+    const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const midiToNoteName = (midi: number) => {
+      const name = noteNames[((midi % 12) + 12) % 12];
+      const octave = Math.floor(midi / 12) - 1;
+      return `${name}${octave}`;
+    };
+
+    const stepMs = Math.max(45, 1000 / Math.max(0.5, settings.loopStepRate));
+
+    const step = () => {
+      const pool = buildLoopPool();
+      if (pool.length === 0) {
+        if (loopCurrentMidiRef.current !== null) {
+          synthRef.current?.stopNote(loopCurrentMidiRef.current, getEffectiveSettings(settings));
+          loopCurrentMidiRef.current = null;
+        }
+        return;
+      }
+
+      let nextIndex = loopStepIndexRef.current;
+      const pattern = settings.loopPattern;
+
+      if (pattern === 'random') {
+        nextIndex = Math.floor(Math.random() * pool.length);
+      } else if (pattern === 'up') {
+        nextIndex = loopStepIndexRef.current % pool.length;
+        loopStepIndexRef.current = (loopStepIndexRef.current + 1) % pool.length;
+      } else if (pattern === 'down') {
+        const normalized = ((loopStepIndexRef.current % pool.length) + pool.length) % pool.length;
+        nextIndex = pool.length - 1 - normalized;
+        loopStepIndexRef.current = (loopStepIndexRef.current + 1) % pool.length;
+      } else {
+        if (pool.length <= 1) {
+          nextIndex = 0;
+        } else {
+          nextIndex = loopStepIndexRef.current;
+          const dir = loopDirectionRef.current;
+          const projected = loopStepIndexRef.current + dir;
+          if (projected >= pool.length - 1 || projected <= 0) {
+            loopDirectionRef.current = (dir * -1) as 1 | -1;
+          }
+          loopStepIndexRef.current = Math.max(0, Math.min(pool.length - 1, projected));
+        }
+      }
+
+      const midi = pool[Math.max(0, Math.min(pool.length - 1, nextIndex))];
+      const freq = midiToFreq(midi);
+      const noteName = midiToNoteName(midi);
+
+      if (loopCurrentMidiRef.current !== null) {
+        synthRef.current?.stopNote(loopCurrentMidiRef.current, getEffectiveSettings(settings));
+      }
+
+      synthRef.current?.startNote(midi, freq, getEffectiveSettings(settings));
+      loopCurrentMidiRef.current = midi;
+      setTargetNote({ note: noteName, hz: freq });
+      setLastPlayedNote(noteName);
+    };
+
+    step();
+    const id = window.setInterval(step, stepMs);
+
+    return () => {
+      window.clearInterval(id);
+      if (loopCurrentMidiRef.current !== null) {
+        synthRef.current?.stopNote(loopCurrentMidiRef.current, getEffectiveSettings(settings));
+        loopCurrentMidiRef.current = null;
+      }
+    };
+  }, [
+    activeMidiNotes,
+    latchedMidiNotes,
+    settings,
+    systemPower,
+  ]);
+
   // Atualizar knobs de parâmetros
+  const applyEqPreset = (presetKey: EqPresetKey) => {
+    const preset = eqPresets.find((item) => item.key === presetKey);
+    if (!preset) return;
+
+    setEqPreset(presetKey);
+    setSettings((prev) => {
+      const next = {
+        ...prev,
+        lowGain: preset.lowGain,
+        midGain: preset.midGain,
+        highGain: preset.highGain,
+        bassBoost: preset.bassBoost,
+      };
+      if (synthRef.current) {
+        synthRef.current.updateActiveVoices(getEffectiveSettings(next));
+      }
+      return next;
+    });
+  };
+
   const getEffectiveSettings = (s: SynthSettings): SynthSettings => {
     const next: SynthSettings = {
       ...s,
@@ -199,6 +406,9 @@ export default function App() {
       next.trim = 100;
       next.waveshapeAmount = 0;
       next.wavefoldAmount = 0;
+      next.sourceWaveEffect = 'off';
+      next.sourceWaveAmount = 0;
+      next.sourceWaveMode = 'clean';
       next.pwmAmount = 0;
       next.subLevel = 0;
       next.subDrive = 0;
@@ -222,6 +432,20 @@ export default function App() {
       next.keyDecay = 0;
       next.keyLoopEnvelope = false;
       next.keyLoopRate = 1;
+      next.gaterEnabled = false;
+      next.gaterRate = 8;
+      next.gaterDepth = 100;
+      next.loopInterleaveEnabled = false;
+      next.loopLatchEnabled = false;
+      next.loopStepRate = 8;
+      next.loopRangeOctaves = 1;
+      next.loopPattern = 'up';
+      next.loopHarmonyEnabled = false;
+      next.loopHarmonyMode = 'minor';
+      next.loopCompatThird = true;
+      next.loopCompatFifth = false;
+      next.loopOctaveUp = false;
+      next.loopOctaveDown = false;
     }
 
     if (!s.block06Enabled) {
@@ -257,7 +481,6 @@ export default function App() {
       next.sampleRateReduction = 0;
       next.chorusMix = 0;
       next.ringModAmount = 0;
-      next.gaterEnabled = false;
     }
 
     return next;
@@ -278,6 +501,18 @@ export default function App() {
       }
       return next;
     });
+  };
+
+  const handleEqBandChange = (band: 'low' | 'mid' | 'high', value: number) => {
+    setEqPreset('custom');
+
+    const keyMap: Record<'low' | 'mid' | 'high', keyof Pick<SynthSettings, 'lowGain' | 'midGain' | 'highGain'>> = {
+      low: 'lowGain',
+      mid: 'midGain',
+      high: 'highGain',
+    };
+
+    handleSettingChange(keyMap[band], value);
   };
 
   const handleLfoChange = (lfo: 'lfo1' | 'lfo2', key: keyof SynthSettings['lfo1'], value: any) => {
@@ -398,7 +633,7 @@ export default function App() {
     if (!synthRef.current) return;
     setErrorMessage(null);
     try {
-      const buffer = await synthRef.current.generateBip(bipType, bipDuration);
+      const buffer = await synthRef.current.generateBip(bipType, bipDuration, bipBaseFreq);
       setSampleState({
         buffer,
         duration: buffer.duration,
@@ -426,6 +661,26 @@ export default function App() {
 
     synthRef.current.init();
 
+    const interleaveActive = settings.block05Enabled && settings.loopInterleaveEnabled;
+
+    if (interleaveActive) {
+      setActiveMidiNotes((prev) => {
+        const next = new Set(prev);
+        next.add(midiNumber);
+        return next;
+      });
+      if (settings.loopLatchEnabled) {
+        setLatchedMidiNotes((prev) => {
+          const next = new Set(prev);
+          if (next.has(midiNumber)) next.delete(midiNumber);
+          else next.add(midiNumber);
+          return next;
+        });
+      }
+      setTargetNote({ note: noteName, hz: freq });
+      return;
+    }
+
     if (!settings.polyphony) {
       synthRef.current.stopAllNotes(getEffectiveSettings(settings));
       setActiveMidiNotes(new Set([midiNumber]));
@@ -443,6 +698,20 @@ export default function App() {
 
   const handleStopNote = (midiNumber: number) => {
     if (!synthRef.current) return;
+
+    const interleaveActive = settings.block05Enabled && settings.loopInterleaveEnabled;
+    if (interleaveActive) {
+      setActiveMidiNotes((prev) => {
+        const next = new Set(prev);
+        next.delete(midiNumber);
+        return next;
+      });
+      if (settings.loopLatchEnabled) {
+        return;
+      }
+      return;
+    }
+
     synthRef.current.stopNote(midiNumber, getEffectiveSettings(settings));
     setActiveMidiNotes((prev) => {
       const next = new Set(prev);
@@ -507,14 +776,47 @@ export default function App() {
     'ringModAmount',
   ];
   const lfoWaveforms: LfoWaveform[] = ['sine', 'triangle', 'sawtooth', 'square', 'sample-hold', 'custom'];
+  const loopPatterns: Array<{ value: LoopPattern; label: string }> = [
+    { value: 'up', label: 'UP' },
+    { value: 'down', label: 'DOWN' },
+    { value: 'updown', label: 'UPDOWN' },
+    { value: 'random', label: 'RANDOM' },
+  ];
+  const harmonyModes: Array<{ value: HarmonyMode; label: string }> = [
+    { value: 'minor', label: 'MINOR' },
+    { value: 'major', label: 'MAJOR' },
+  ];
+  const sourceWaveEffects: Array<{ value: SourceWaveEffect; label: string }> = [
+    { value: 'off', label: 'OFF' },
+    { value: 'sine', label: 'SINE' },
+    { value: 'triangle', label: 'TRIANGLE' },
+    { value: 'sawtooth', label: 'SAW' },
+    { value: 'square', label: 'SQUARE' },
+    { value: 'pulse', label: 'PULSE' },
+  ];
+  const sourceWaveModes: Array<{ value: SourceWaveMode; label: string }> = [
+    { value: 'clean', label: 'CLEAN' },
+    { value: 'aggressive', label: 'AGGRESSIVE' },
+  ];
+  const beepTypes: Array<{ value: ToneGeneratorType; label: string }> = [
+    { value: 'sine', label: 'SINE' },
+    { value: 'triangle', label: 'TRIANGLE' },
+    { value: 'sawtooth', label: 'SAW' },
+    { value: 'square', label: 'SQUARE' },
+    { value: 'pulse', label: 'PULSE' },
+    { value: 'supersaw', label: 'SUPERSAW' },
+    { value: 'fm-bell', label: 'FM BELL' },
+    { value: 'pluck', label: 'PLUCK' },
+    { value: 'noise', label: 'NOISE' },
+  ];
 
   return (
-    <div className="min-h-screen bg-[#383b40] text-[#eef2f7] font-sans pb-28 sm:pb-32 relative select-none overflow-x-hidden p-3 sm:p-4 md:p-8">
+    <div className="min-h-screen text-[#eef2f7] font-sans pb-28 sm:pb-32 relative select-none overflow-x-hidden p-3 sm:p-4 md:p-6 app-shell">
       {/* Moldura metálica principal do Cockpit Overhead Panel */}
-      <div className="max-w-[1200px] mx-auto bg-[#43474e] border-2 sm:border-4 border-[#25272a] rounded-xl sm:rounded-2xl shadow-[0_20px_50px_rgba(0,0,0,0.8),inset_0_2px_4px_rgba(255,255,255,0.1)] overflow-hidden relative">
+      <div className="max-w-[1560px] mx-auto bg-[#2f3339] border border-[#1e2126] rounded-[24px] sm:rounded-[30px] shadow-[0_18px_44px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.06)] overflow-hidden relative">
         
         {/* TOP BAR / LOGO & SYSTEM CONFIG */}
-        <div className="bg-[#2d3035] border-b-2 border-[#1e2023] px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="bg-[#24282d] border-b border-white/5 px-5 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             {/* Chave de energia rotatória/alavanca real */}
             <div className="flex items-center gap-2 bg-[#1d1f22] px-3 py-1.5 rounded-lg border border-[#4d515a] shadow-inner">
@@ -568,13 +870,13 @@ export default function App() {
         )}
 
         {/* COCKPIT GRID SYSTEM */}
-        <div className="p-3 sm:p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6 bg-[#3d4148]">
+        <div className="p-3 sm:p-4 md:p-6 grid grid-cols-1 xl:grid-cols-[380px_minmax(0,1fr)] gap-4 sm:gap-6 bg-transparent items-start">
 
           {/* COLUNA ESQUERDA: HUD DISPLAY & CONTROLE DE INPUT (MÓDULO DE SINAL) */}
-          <div className="lg:col-span-6 flex flex-col gap-6">
+          <div className="flex flex-col gap-5 xl:sticky xl:top-6 self-start">
             
             {/* 1. HUD DISPLAY: DETECTOR DE FREQUÊNCIA E NOTA (AMBER SEVEN-SEGMENT) */}
-            <div className="bg-[#24272c] border border-[#181a1d] rounded-xl p-5 shadow-[inset_0_4px_12px_rgba(0,0,0,0.9)] relative overflow-hidden flex flex-col justify-between min-h-[160px]">
+            <div className="interactive-card bg-[#24272c] border border-white/6 rounded-[18px] p-5 shadow-[inset_0_3px_8px_rgba(0,0,0,0.7),0_6px_16px_rgba(0,0,0,0.16)] relative overflow-hidden flex flex-col justify-between min-h-[160px]">
               {/* Parafusos */}
               <div className="absolute top-2 left-2"><Screw /></div>
               <div className="absolute top-2 right-2"><Screw /></div>
@@ -621,7 +923,7 @@ export default function App() {
             </div>
 
             {/* 2. AUDIO RECORDER & OSCILLATOR PANEL */}
-            <div className="bg-[#32363c] border-2 border-[#1e2024] rounded-xl p-5 relative shadow-md">
+            <div className="interactive-card bg-[#31353b] border border-white/6 rounded-[18px] p-5 relative shadow-[0_6px_16px_rgba(0,0,0,0.16)]">
               {/* Parafusos */}
               <div className="absolute top-2.5 left-2.5"><Screw /></div>
               <div className="absolute top-2.5 right-2.5"><Screw /></div>
@@ -635,7 +937,7 @@ export default function App() {
               </div>
 
               {/* Selector Tabs (Estilo botões mecânicos do cockpit) */}
-              <div className="grid grid-cols-3 gap-2 bg-[#1e2024] p-1 rounded-lg mb-4 border border-[#484c54]">
+              <div className="grid grid-cols-3 gap-2 bg-[#1e2024] p-1 rounded-[14px] mb-4 border border-white/5">
                 <button
                   onClick={() => setActiveTab('rec')}
                   className={`font-mono text-[10px] font-black uppercase py-2 px-1.5 rounded transition-all cursor-pointer outline-none flex items-center justify-center gap-1.5 ${
@@ -669,7 +971,7 @@ export default function App() {
               </div>
 
               {/* Conteúdo dinâmico das abas */}
-              <div className="bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34]">
+              <div className="interactive-card bg-[#1e2024] p-4 rounded-[16px] border border-white/5">
                 
                 {/* 1. MIC INTERFACES */}
                 {activeTab === 'rec' && (
@@ -748,22 +1050,35 @@ export default function App() {
                 {activeTab === 'bip' && (
                   <div className="flex flex-col gap-4">
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                      {(['sine', 'square', 'sawtooth', 'triangle'] as OscillatorType[]).map((type) => (
+                      {beepTypes.map((item) => (
                         <button
-                          key={type}
-                          onClick={() => setBipType(type)}
+                          key={item.value}
+                          onClick={() => setBipType(item.value)}
                           className={`font-mono text-[9px] font-black uppercase py-2 rounded border transition-all cursor-pointer ${
-                            bipType === type 
+                            bipType === item.value 
                               ? 'bg-[#ff9500] text-black border-[#b07200]' 
                               : 'bg-[#2b2e34] text-[#8e95a0] border-[#3e4249] hover:text-white'
                           }`}
                         >
-                          {type}
+                          {item.label}
                         </button>
                       ))}
                     </div>
 
-                    <div className="bg-[#24272c] p-2.5 rounded border border-[#3e4249]">
+                    <div className="interactive-card bg-[#24272c] p-2.5 rounded border border-[#3e4249]">
+                      <CustomSlider
+                        min={55}
+                        max={1760}
+                        value={bipBaseFreq}
+                        onChange={(v) => setBipBaseFreq(v)}
+                        label="BASE FREQ"
+                        unit="HZ"
+                        helpText="Defines the generated tone pitch before keyboard transposition. Useful for designing bright or bass-heavy source timbres."
+                        step={1}
+                      />
+                    </div>
+
+                    <div className="interactive-card bg-[#24272c] p-2.5 rounded border border-[#3e4249]">
                       <CustomSlider
                         min={20}
                         max={500}
@@ -771,6 +1086,7 @@ export default function App() {
                         onChange={(v) => setBipDuration(v)}
                         label="WIDTH"
                         unit="MS"
+                        helpText="Controls how long the beep lasts before it fades out. Short values feel clicky; long values feel more tone-like."
                         step={1}
                       />
                     </div>
@@ -798,7 +1114,7 @@ export default function App() {
 
               {/* Botão de limpeza com guard box de segurança */}
               {sampleState.buffer && (
-                <div className="mt-3 flex items-center justify-between bg-[#24272c] p-2.5 rounded border border-[#30333a]">
+                <div className="interactive-card mt-3 flex items-center justify-between bg-[#24272c] p-2.5 rounded border border-[#30333a]">
                   <span className="font-mono text-[9px] text-[#8e95a0] uppercase">BUFFER CLEAR:</span>
                   <div className="relative">
                     <button
@@ -834,9 +1150,9 @@ export default function App() {
           </div>
 
            {/* COLUNA DIREITA: MÓDULO DE MIXAGEM & FX (SOUND CUSTOMIZATION) */}
-          <div className="lg:col-span-6 flex flex-col gap-6">
+          <div className="flex flex-col gap-5 xl:pl-1">
             
-            <div className="bg-[#32363c] border-2 border-[#1e2024] rounded-xl p-5 relative shadow-md">
+            <div className="interactive-card bg-[#31353b] border border-white/6 rounded-[18px] p-5 relative shadow-[0_6px_16px_rgba(0,0,0,0.16)]">
               {/* Parafusos */}
               <div className="absolute top-2.5 left-2.5"><Screw /></div>
               <div className="absolute top-2.5 right-2.5"><Screw /></div>
@@ -845,15 +1161,15 @@ export default function App() {
 
               <div className="text-center border-b border-[#23252a] pb-3 mb-4 mt-2">
                 <span className="font-mono text-[10px] text-white tracking-widest font-black block uppercase">
-                  SOUND CUSTOMIZATION & MIXING
+                  SIGNAL PATH RACK
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#1e2024] p-1.5 rounded-lg border border-[#2b2e34] mb-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-[#1e2024] p-1.5 rounded-[14px] border border-white/5 mb-3">
                 {[
-                  ['tone', 'TONE'],
-                  ['mod', 'MOD'],
-                  ['filterfx', 'FILTER/FX'],
+                  ['tone', 'SOURCE'],
+                  ['mod', 'MOTION'],
+                  ['filterfx', 'FILTER/SPACE'],
                   ['system', 'SYSTEM'],
                 ].map(([tab, label]) => (
                   <button
@@ -873,43 +1189,61 @@ export default function App() {
               {controlPanelTab === 'tone' && (
               <>
               {/* GRUPO DE KNOBS: TIMBRE EQ & EFFECTS */}
-              <div className={`flex flex-col gap-3 bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] mb-3 ${!settings.block01Enabled ? 'opacity-55' : ''}`}>
+              <div className={`interactive-card flex flex-col gap-3 bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] mb-3 ${!settings.block01Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5 mb-2">
-                  <div className="flex items-center justify-between">
-                    <span>01 // ANALOG TIMBRE EQ & BASS BOOST</span>
-                    <button onClick={() => toggleBlock('block01Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block01Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block01Enabled ? 'ON' : 'OFF'}</button>
+                  <div className="flex items-center justify-between gap-2">
+                    <span>01 // CORE TONE EQ</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setEqPresetMenuOpen((prev) => !prev)}
+                        className="text-[8px] px-2 py-0.5 rounded border bg-[#2b2e34] text-[#ffae00] border-[#4b4f57]"
+                      >
+                        PRESETS
+                      </button>
+                      <button onClick={() => toggleBlock('block01Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block01Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block01Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 justify-items-center">
-                  <Knob
-                    min={-12}
-                    max={12}
-                    value={settings.lowGain}
-                    onChange={(v) => handleSettingChange('lowGain', v)}
-                    name="LOW EQ"
-                    unit="dB"
-                  />
-                  <Knob
-                    min={-12}
-                    max={12}
-                    value={settings.midGain}
-                    onChange={(v) => handleSettingChange('midGain', v)}
-                    name="MID EQ"
-                    unit="dB"
-                  />
-                  <Knob
-                    min={-12}
-                    max={12}
-                    value={settings.highGain}
-                    onChange={(v) => handleSettingChange('highGain', v)}
-                    name="HIGH EQ"
-                    unit="dB"
-                  />
+                {eqPresetMenuOpen && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-black/25 p-2 rounded-[14px] border border-white/5">
+                    {eqPresets.map((preset) => (
+                      <button
+                        key={preset.key}
+                        onClick={() => applyEqPreset(preset.key)}
+                        className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${eqPreset === preset.key ? 'bg-[#ff9500] text-black border-[#b07200]' : 'bg-[#24272c] text-[#8e95a0] border-[#3e4249] hover:text-white hover:border-[#59606d]'}`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setEqPreset('custom')}
+                      className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${eqPreset === 'custom' ? 'bg-[#ff9500] text-black border-[#b07200]' : 'bg-[#24272c] text-[#8e95a0] border-[#3e4249] hover:text-white hover:border-[#59606d]'}`}
+                    >
+                      CUSTOM
+                    </button>
+                  </div>
+                )}
+                <EqResponseVisualizer
+                  lowGain={settings.lowGain}
+                  midGain={settings.midGain}
+                  highGain={settings.highGain}
+                  bassBoost={settings.bassBoost}
+                  presetLabel={eqPreset === 'custom' ? 'CUSTOM' : eqPresets.find((item) => item.key === eqPreset)?.label ?? 'BALANCED'}
+                  onBandChange={handleEqBandChange}
+                />
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  <p className="font-mono text-[8px] uppercase tracking-wider text-[#8e95a0] text-center max-w-[240px]">
+                    drag points to equalize
+                  </p>
                   <Knob
                     min={0}
                     max={12}
+                    step={0.1}
                     value={settings.bassBoost}
-                    onChange={(v) => handleSettingChange('bassBoost', v)}
+                    onChange={(v) => {
+                      setEqPreset('custom');
+                      handleSettingChange('bassBoost', v);
+                    }}
                     name="SUB BOOST"
                     unit="dB"
                   />
@@ -919,10 +1253,11 @@ export default function App() {
               <div className={`flex flex-col gap-3 bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] mb-3 ${!settings.block02Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5 mb-2">
                   <div className="flex items-center justify-between">
-                    <span>02 // WAVE SOURCE SHAPING</span>
+                    <span>02 // SOURCE SHAPING</span>
                     <button onClick={() => toggleBlock('block02Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block02Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block02Enabled ? 'ON' : 'OFF'}</button>
                   </div>
                 </div>
+                <BlockOscillatorPreview block={2} settings={settings} enabled={settings.block02Enabled} title="SOURCE SHAPE" />
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 justify-items-center">
                   <Knob
                     min={0}
@@ -1031,6 +1366,45 @@ export default function App() {
                   </label>
                 </div>
 
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-1">
+                  <label className="flex flex-col gap-1 font-mono text-[9px] uppercase text-[#8e95a0]">
+                    INPUT WAVE FX
+                    <select
+                      value={settings.sourceWaveEffect}
+                      onChange={(e) => handleSettingChange('sourceWaveEffect', e.target.value)}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      {sourceWaveEffects.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 font-mono text-[9px] uppercase text-[#8e95a0]">
+                    WAVE MODE
+                    <select
+                      value={settings.sourceWaveMode}
+                      onChange={(e) => handleSettingChange('sourceWaveMode', e.target.value)}
+                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                    >
+                      {sourceWaveModes.map((item) => (
+                        <option key={item.value} value={item.value}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="flex flex-col gap-1">
+                    <CustomSlider
+                      min={0}
+                      max={100}
+                      value={settings.sourceWaveAmount}
+                      onChange={(v) => handleSettingChange('sourceWaveAmount', v)}
+                      label="INPUT WAVE MIX"
+                      unit="%"
+                      helpText="Uses a smoother low-end curve for musical control. At low values it stays subtle; higher values ramp up faster."
+                      density="compact"
+                    />
+                  </div>
+                </div>
+
                 <WavefolderVisualizer foldAmount={settings.wavefoldAmount} />
               </div>
 
@@ -1038,13 +1412,14 @@ export default function App() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                 
                 {/* KEYBOARD ENVELOPE (ADSR) */}
-                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block03Enabled ? 'opacity-55' : ''}`}>
+                  <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block03Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                     <div className="flex items-center justify-between">
                       <span>03 // KEYBOARD ENVELOPE (ADSR)</span>
                       <button onClick={() => toggleBlock('block03Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block03Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block03Enabled ? 'ON' : 'OFF'}</button>
                     </div>
                   </div>
+                  <BlockOscillatorPreview block={3} settings={settings} enabled={settings.block03Enabled} title="ENVELOPE" />
                   
                   {/* ATTACK */}
                   <div className="flex flex-col gap-1">
@@ -1055,6 +1430,7 @@ export default function App() {
                       onChange={(v) => handleSettingChange('keyAttack', v)}
                       label="KEY ATTACK"
                       unit="MS"
+                      helpText="Sets how fast the keyboard envelope rises after the note starts. Faster attack feels snappier; slower attack feels softer."
                       density="compact"
                     />
                   </div>
@@ -1068,6 +1444,7 @@ export default function App() {
                       onChange={(v) => handleSettingChange('keySustain', v)}
                       label="KEY SUSTAIN"
                       unit="%"
+                      helpText="Keeps more or less level after the attack. Higher sustain sounds fuller and more even."
                       density="compact"
                     />
                   </div>
@@ -1081,84 +1458,10 @@ export default function App() {
                       onChange={(v) => handleSettingChange('keyRelease', v)}
                       label="KEY RELEASE"
                       unit="MS"
+                      helpText="Controls how long the note fades after you release the key. Longer release sounds smoother and more washed."
                       density="compact"
                     />
                   </div>
-                </div>
-
-                {/* PITCH TENSION CALIBRATOR */}
-                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block04Enabled ? 'opacity-55' : ''}`}>
-                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
-                    <div className="flex items-center justify-between">
-                      <span>04 // PITCH CALIBRATOR</span>
-                      <button onClick={() => toggleBlock('block04Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block04Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block04Enabled ? 'ON' : 'OFF'}</button>
-                    </div>
-                  </div>
-
-                  {/* PITCH COARSE (SEMITONES) */}
-                  <div className="flex flex-col gap-1">
-                    <CustomSlider
-                      min={-24}
-                      max={24}
-                      step={1}
-                      value={settings.pitchCoarse}
-                      onChange={(v) => handleSettingChange('pitchCoarse', v)}
-                      label="COARSE TUNE"
-                      unit="ST"
-                      density="compact"
-                    />
-                  </div>
-
-                  {/* PITCH FINE (CENTS) */}
-                  <div className="flex flex-col gap-1">
-                    <CustomSlider
-                      min={-50}
-                      max={50}
-                      value={settings.pitchFine}
-                      onChange={(v) => handleSettingChange('pitchFine', v)}
-                      label="FINE-TUNE"
-                      unit="CTS"
-                      density="compact"
-                    />
-                  </div>
-                </div>
-
-              </div>
-
-              </>
-              )}
-
-              {controlPanelTab === 'mod' && (
-              <>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block05Enabled ? 'opacity-55' : ''}`}>
-                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
-                    <div className="flex items-center justify-between">
-                      <span>05 // DAHDSR + LOOP ENV</span>
-                      <button onClick={() => toggleBlock('block05Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block05Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block05Enabled ? 'ON' : 'OFF'}</button>
-                    </div>
-                  </div>
-
-                  {[
-                    ['keyDelay', 'DELAY', 0, 500, 'MS'],
-                    ['keyAttack', 'ATTACK', 0, 200, 'MS'],
-                    ['keyHold', 'HOLD', 0, 500, 'MS'],
-                    ['keyDecay', 'DECAY', 10, 1000, 'MS'],
-                    ['keySustain', 'SUSTAIN', 0, 100, '%'],
-                    ['keyRelease', 'RELEASE', 10, 500, 'MS'],
-                  ].map(([key, label, min, max, unit]) => (
-                    <div className="flex flex-col gap-1" key={String(key)}>
-                      <CustomSlider
-                        min={Number(min)}
-                        max={Number(max)}
-                        value={(settings as any)[key]}
-                        onChange={(v) => handleSettingChange(key as keyof SynthSettings, v)}
-                        label={String(label)}
-                        unit={String(unit)}
-                        density="compact"
-                      />
-                    </div>
-                  ))}
 
                   <div className="grid grid-cols-2 gap-2 mt-1">
                     <button
@@ -1180,8 +1483,277 @@ export default function App() {
                         onChange={(v) => handleSettingChange('keyLoopRate', v)}
                         label="LOOP RATE"
                         unit="HZ"
+                        helpText="Sets how fast the looping envelope repeats. Faster values feel more animated and rhythmic."
                         density="compact"
                       />
+                    </div>
+                  </div>
+                </div>
+
+                {/* PITCH TENSION CALIBRATOR */}
+                <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block04Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>04 // PITCH ALIGN</span>
+                      <button onClick={() => toggleBlock('block04Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block04Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block04Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+                  <BlockOscillatorPreview block={4} settings={settings} enabled={settings.block04Enabled} title="PITCH TRACE" />
+
+                  {/* PITCH COARSE (SEMITONES) */}
+                  <div className="flex flex-col gap-1">
+                    <CustomSlider
+                      min={-24}
+                      max={24}
+                      step={1}
+                      value={settings.pitchCoarse}
+                      onChange={(v) => handleSettingChange('pitchCoarse', v)}
+                      label="COARSE TUNE"
+                      unit="ST"
+                      helpText="Moves the pitch in semitone steps. Use it for musical transposition and interval shifts."
+                      density="compact"
+                    />
+                  </div>
+
+                  {/* PITCH FINE (CENTS) */}
+                  <div className="flex flex-col gap-1">
+                    <CustomSlider
+                      min={-50}
+                      max={50}
+                      value={settings.pitchFine}
+                      onChange={(v) => handleSettingChange('pitchFine', v)}
+                      label="FINE-TUNE"
+                      unit="CTS"
+                      helpText="Offsets pitch in cents for subtle detune or accurate tuning."
+                      density="compact"
+                    />
+                  </div>
+                </div>
+
+              </div>
+
+              </>
+              )}
+
+              {controlPanelTab === 'mod' && (
+              <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block05Enabled ? 'opacity-55' : ''}`}>
+                  <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
+                    <div className="flex items-center justify-between">
+                      <span>05 // LOOP MOTION</span>
+                      <button onClick={() => toggleBlock('block05Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block05Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block05Enabled ? 'ON' : 'OFF'}</button>
+                    </div>
+                  </div>
+                  <BlockOscillatorPreview block={5} settings={settings} enabled={settings.block05Enabled} title="LOOP TRACE" />
+                  <div className="font-mono text-[7px] uppercase tracking-wider text-[#8e95a0]">
+                    Loop envelope and rhythmic gate are grouped in this motion stage.
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                    <div className="interactive-card bg-[#24272c] rounded border border-[#30333a] p-2.5 flex flex-col gap-2">
+                      <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-wider">
+                        Envelope Loop
+                      </div>
+                      <button
+                        onClick={() => handleSettingChange('keyLoopEnvelope', !settings.keyLoopEnvelope)}
+                        className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                          settings.keyLoopEnvelope
+                            ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40'
+                            : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                        }`}
+                      >
+                        {settings.keyLoopEnvelope ? 'LOOP ON' : 'LOOP OFF'}
+                      </button>
+                      <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                        <CustomSlider
+                          min={1}
+                          max={20}
+                          step={0.5}
+                          value={settings.keyLoopRate}
+                          onChange={(v) => handleSettingChange('keyLoopRate', v)}
+                          label="LOOP RATE"
+                          unit="HZ"
+                          helpText="Sets how quickly the looping envelope repeats. Faster rates feel more percussive and alive."
+                          density="compact"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="interactive-card bg-[#24272c] rounded border border-[#30333a] p-2.5 flex flex-col gap-2">
+                      <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-wider">
+                        Rhythmic Gate / Tremolo
+                      </div>
+                      <button
+                        onClick={() => handleSettingChange('gaterEnabled', !settings.gaterEnabled)}
+                        className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                          settings.gaterEnabled
+                            ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40'
+                            : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                        }`}
+                      >
+                        {settings.gaterEnabled ? 'GATER ON' : 'GATER OFF'}
+                      </button>
+                      <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                        <CustomSlider
+                          min={0.1}
+                          max={30}
+                          step={0.1}
+                          value={settings.gaterRate}
+                          onChange={(v) => handleSettingChange('gaterRate', v)}
+                          label="GATE RATE"
+                          unit="HZ"
+                          helpText="Controls how fast the rhythmic gate pulses."
+                          density="compact"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 items-end">
+                        <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                          <CustomSlider
+                            min={0}
+                            max={100}
+                            value={settings.gaterDepth}
+                            onChange={(v) => handleSettingChange('gaterDepth', v)}
+                            label="GATE DEPTH"
+                            unit="%"
+                            helpText="Sets how deep the tremolo/gate dips the volume."
+                            density="compact"
+                          />
+                        </div>
+                        <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                          GATE WAVE
+                          <select
+                            value={settings.gaterWaveform}
+                            onChange={(e) => handleSettingChange('gaterWaveform', e.target.value)}
+                            className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                          >
+                            <option value="square">SQUARE</option>
+                            <option value="sine">SINE</option>
+                            <option value="triangle">TRIANGLE</option>
+                            <option value="sawtooth">SAW / PUMP</option>
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="interactive-card bg-[#20242a] border border-[#353b45] rounded-lg p-2.5 grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-wider md:col-span-2">
+                      Loop Note Engine
+                    </div>
+
+                    <button
+                      onClick={() => handleSettingChange('loopInterleaveEnabled', !settings.loopInterleaveEnabled)}
+                      className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                        settings.loopInterleaveEnabled
+                          ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45'
+                          : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                      }`}
+                    >
+                      {settings.loopInterleaveEnabled ? 'INTERLEAVE ON' : 'INTERLEAVE OFF'}
+                    </button>
+
+                    <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      <CustomSlider
+                        min={0.5}
+                        max={20}
+                        step={0.5}
+                        value={settings.loopStepRate}
+                        onChange={(v) => handleSettingChange('loopStepRate', v)}
+                        label="STEP RATE"
+                        unit="HZ"
+                        helpText="How fast interleaved notes are stepped while multiple keys are held."
+                        density="compact"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => handleSettingChange('loopLatchEnabled', !settings.loopLatchEnabled)}
+                      className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                        settings.loopLatchEnabled
+                          ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45'
+                          : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                      }`}
+                    >
+                      {settings.loopLatchEnabled ? 'LATCH ON' : 'LATCH OFF'}
+                    </button>
+
+                    <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      <CustomSlider
+                        min={0}
+                        max={3}
+                        step={1}
+                        value={settings.loopRangeOctaves}
+                        onChange={(v) => handleSettingChange('loopRangeOctaves', v)}
+                        label="RANGE"
+                        unit="OCT"
+                        helpText="Limits generated arp notes away from root note. Lower range keeps movement tighter."
+                        density="compact"
+                      />
+                    </div>
+
+                    <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      STEP PATTERN
+                      <select
+                        value={settings.loopPattern}
+                        onChange={(e) => handleSettingChange('loopPattern', e.target.value)}
+                        className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                      >
+                        {loopPatterns.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <button
+                      onClick={() => handleSettingChange('loopHarmonyEnabled', !settings.loopHarmonyEnabled)}
+                      className={`font-mono text-[9px] font-black uppercase py-2 rounded border ${
+                        settings.loopHarmonyEnabled
+                          ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45'
+                          : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
+                      }`}
+                    >
+                      {settings.loopHarmonyEnabled ? 'HARMONY ON' : 'HARMONY OFF'}
+                    </button>
+
+                    <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
+                      HARMONY MODE
+                      <select
+                        value={settings.loopHarmonyMode}
+                        onChange={(e) => handleSettingChange('loopHarmonyMode', e.target.value)}
+                        className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
+                      >
+                        {harmonyModes.map((item) => (
+                          <option key={item.value} value={item.value}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="md:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <button
+                        onClick={() => handleSettingChange('loopCompatThird', !settings.loopCompatThird)}
+                        className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${settings.loopCompatThird ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}
+                      >
+                        THIRD
+                      </button>
+                      <button
+                        onClick={() => handleSettingChange('loopCompatFifth', !settings.loopCompatFifth)}
+                        className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${settings.loopCompatFifth ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}
+                      >
+                        FIFTH
+                      </button>
+                      <button
+                        onClick={() => handleSettingChange('loopOctaveUp', !settings.loopOctaveUp)}
+                        className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${settings.loopOctaveUp ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}
+                      >
+                        OCT +1
+                      </button>
+                      <button
+                        onClick={() => handleSettingChange('loopOctaveDown', !settings.loopOctaveDown)}
+                        className={`font-mono text-[8px] font-black uppercase py-2 rounded border ${settings.loopOctaveDown ? 'bg-[#34c759]/12 text-[#34c759] border-[#34c759]/45' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}
+                      >
+                        OCT -1
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1189,13 +1761,14 @@ export default function App() {
                 <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block06Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                     <div className="flex items-center justify-between">
-                      <span>06 // LFO ENGINE</span>
+                      <span>06 // LFO GRID</span>
                       <button onClick={() => toggleBlock('block06Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block06Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block06Enabled ? 'ON' : 'OFF'}</button>
                     </div>
                   </div>
+                  <BlockOscillatorPreview block={6} settings={settings} enabled={settings.block06Enabled} title="LFO GRID" />
 
                   {(['lfo1', 'lfo2'] as const).map((lfo) => (
-                    <div key={lfo} className="bg-[#24272c] p-2 rounded border border-[#30333a] flex flex-col gap-2">
+                    <div key={lfo} className="interactive-card bg-[#24272c] p-2 rounded border border-[#30333a] flex flex-col gap-2">
                       <span className="font-mono text-[9px] text-white uppercase font-bold">{lfo.toUpperCase()}</span>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
                         <div className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
@@ -1207,6 +1780,7 @@ export default function App() {
                             onChange={(v) => handleLfoChange(lfo, 'rate', v)}
                             label="RATE"
                             unit="HZ"
+                            helpText={lfo === 'lfo1' ? 'Sets how fast LFO 1 moves. Slower motion feels wider and smoother.' : 'Sets how fast LFO 2 moves. Faster motion feels more animated and aggressive.'}
                             orientation="vertical"
                             density="compact"
                             className="items-center"
@@ -1221,6 +1795,7 @@ export default function App() {
                             onChange={(v) => handleLfoChange(lfo, 'depth', v)}
                             label="DEPTH"
                             unit="%"
+                            helpText={lfo === 'lfo1' ? 'Sets how deeply LFO 1 affects its target. More depth means a bigger movement.' : 'Sets how deeply LFO 2 affects its target. More depth means stronger modulation.'}
                             orientation="vertical"
                             density="compact"
                             className="items-center"
@@ -1257,12 +1832,13 @@ export default function App() {
               <div className={`bg-[#1e2024] p-3 sm:p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 mb-3 ${!settings.block07Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                   <div className="flex items-center justify-between">
-                    <span>07 // MOD MATRIX</span>
+                    <span>07 // ROUTING MATRIX</span>
                     <button onClick={() => toggleBlock('block07Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block07Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block07Enabled ? 'ON' : 'OFF'}</button>
                   </div>
                 </div>
+                <BlockOscillatorPreview block={7} settings={settings} enabled={settings.block07Enabled} title="ROUTE MAP" />
                 {settings.modMatrix.map((slot, idx) => (
-                  <div key={idx} className="grid grid-cols-1 md:grid-cols-5 gap-2 bg-[#24272c] rounded border border-[#30333a] p-2">
+                  <div key={idx} className="interactive-card grid grid-cols-1 md:grid-cols-5 gap-2 bg-[#24272c] rounded border border-[#30333a] p-2">
                     <button
                       onClick={() => handleModMatrixChange(idx, 'enabled', !slot.enabled)}
                       className={`font-mono text-[9px] font-black uppercase rounded border py-1 ${
@@ -1293,6 +1869,7 @@ export default function App() {
                         value={slot.amount}
                         onChange={(v) => handleModMatrixChange(idx, 'amount', v)}
                         label="AMOUNT"
+                        helpText="Controls how strongly this modulation source affects the chosen destination. Positive and negative values both matter."
                         density="compact"
                       />
                     </div>
@@ -1307,13 +1884,19 @@ export default function App() {
               {controlPanelTab === 'filterfx' && (
               <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block08Enabled ? 'opacity-55' : ''}`}>
+                <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block08Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                     <div className="flex items-center justify-between">
-                      <span>08 // FILTER PERSONALITY</span>
+                      <span>08 // FILTER RESPONSE</span>
                       <button onClick={() => toggleBlock('block08Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block08Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block08Enabled ? 'ON' : 'OFF'}</button>
                     </div>
                   </div>
+                  <FilterResponseVisualizer
+                    cutoff={settings.filterCutoff}
+                    resonance={settings.filterResonance}
+                    routing={settings.filterRouting}
+                    parallelBlend={settings.filterParallelBlend}
+                  />
 
                   <div className="grid grid-cols-2 gap-2 justify-items-center">
                     <Knob min={40} max={16000} step={10} value={settings.filterCutoff} onChange={(v) => handleSettingChange('filterCutoff', v)} name="CUTOFF" unit="Hz" />
@@ -1342,6 +1925,7 @@ export default function App() {
                         onChange={(v) => handleSettingChange('filterParallelBlend', v)}
                         label="PARALLEL BLEND LP/HP"
                         unit="%"
+                        helpText="Chooses how much low-pass and high-pass are mixed when the filter runs in parallel mode."
                         density="compact"
                       />
                     </div>
@@ -1355,27 +1939,23 @@ export default function App() {
                         onChange={(v) => handleSettingChange('selfOscillation', v)}
                         label="SELF OSC"
                         unit="%"
+                        helpText="Pushes the filter toward self-oscillation, making it ring like a tone generator."
                         orientation="vertical"
                         density="compact"
                         className="items-center"
                       />
                   </div>
 
-                  <FilterResponseVisualizer
-                    cutoff={settings.filterCutoff}
-                    resonance={settings.filterResonance}
-                    routing={settings.filterRouting}
-                    parallelBlend={settings.filterParallelBlend}
-                  />
                 </div>
 
-                <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block09Enabled ? 'opacity-55' : ''}`}>
+                <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 ${!settings.block09Enabled ? 'opacity-55' : ''}`}>
                   <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                     <div className="flex items-center justify-between">
-                      <span>09 // DRIFT + UNISON</span>
+                      <span>09 // UNISON FIELD</span>
                       <button onClick={() => toggleBlock('block09Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block09Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block09Enabled ? 'ON' : 'OFF'}</button>
                     </div>
                   </div>
+                  <BlockOscillatorPreview block={9} settings={settings} enabled={settings.block09Enabled} title="UNISON STACK" />
 
                   <div className="grid grid-cols-2 gap-2 justify-items-center">
                     <Knob min={0} max={100} value={settings.driftAmount} onChange={(v) => handleSettingChange('driftAmount', v)} name="DRIFT" unit="%" />
@@ -1400,13 +1980,14 @@ export default function App() {
                 </div>
               </div>
 
-              <div className={`bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 mb-3 ${!settings.block10Enabled ? 'opacity-55' : ''}`}>
+              <div className={`interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3 mb-3 ${!settings.block10Enabled ? 'opacity-55' : ''}`}>
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5">
                   <div className="flex items-center justify-between">
-                    <span>10 // FX: CRUSHER + CHORUS + RING MOD + GATER</span>
+                    <span>10 // FX GLITCH BUS</span>
                     <button onClick={() => toggleBlock('block10Enabled')} className={`text-[8px] px-2 py-0.5 rounded border ${settings.block10Enabled ? 'bg-[#34c759]/15 text-[#34c759] border-[#34c759]/40' : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'}`}>{settings.block10Enabled ? 'ON' : 'OFF'}</button>
                   </div>
                 </div>
+                <BlockOscillatorPreview block={10} settings={settings} enabled={settings.block10Enabled} title="GLITCH BUS" />
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 sm:gap-2 justify-items-center">
                   <Knob min={0} max={100} value={settings.drive} onChange={(v) => handleSettingChange('drive', v)} name="LEGACYDRV" unit="%" />
@@ -1422,35 +2003,6 @@ export default function App() {
                   <Knob min={10} max={5000} step={10} value={settings.ringModFreq} onChange={(v) => handleSettingChange('ringModFreq', v)} name="RING FREQ" unit="Hz" />
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-2 bg-[#24272c] p-2 rounded border border-[#30333a]">
-                  <button
-                    onClick={() => handleSettingChange('gaterEnabled', !settings.gaterEnabled)}
-                    className={`font-mono text-[9px] font-black uppercase rounded border py-2 ${
-                      settings.gaterEnabled
-                        ? 'bg-[#34c759]/10 text-[#34c759] border-[#34c759]/40'
-                        : 'bg-black/40 text-[#8e95a0] border-[#3e4249]'
-                    }`}
-                  >
-                    {settings.gaterEnabled ? 'GATER ON' : 'GATER BYPASS'}
-                  </button>
-
-                  <label className="font-mono text-[8px] text-[#8e95a0] uppercase flex flex-col gap-1">
-                    GATE WAVE
-                    <select
-                      value={settings.gaterWaveform}
-                      onChange={(e) => handleSettingChange('gaterWaveform', e.target.value)}
-                      className="bg-[#2b2e34] border border-[#3e4249] rounded px-2 py-1 text-white"
-                    >
-                      <option value="square">SQUARE</option>
-                      <option value="sine">SINE</option>
-                      <option value="triangle">TRIANGLE</option>
-                      <option value="sawtooth">SAW / PUMP</option>
-                    </select>
-                  </label>
-
-                  <Knob min={0.1} max={30} step={0.1} value={settings.gaterRate} onChange={(v) => handleSettingChange('gaterRate', v)} name="GATE RATE" unit="Hz" />
-                  <Knob min={0} max={100} value={settings.gaterDepth} onChange={(v) => handleSettingChange('gaterDepth', v)} name="GATE DEPTH" unit="%" />
-                </div>
               </div>
 
               </>
@@ -1461,7 +2013,7 @@ export default function App() {
               <>
 
               {/* SWITCHES & ACTUATORS */}
-              <div className="bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3">
+              <div className="interactive-card bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] flex flex-col gap-3">
                 <div className="font-mono text-[8px] text-[#ff9500] uppercase font-black tracking-widest border-b border-[#2d3138] pb-1.5 mb-1">
                   11 // ENGINE ACTUATORS & SYSTEM SWITCHES
                 </div>
@@ -1469,7 +2021,7 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   
                   {/* REVERSE ACTUATOR WITH RED GUARD */}
-                  <div className="bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2.5">
+                  <div className="interactive-card bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2.5">
                     <div className="flex flex-col">
                       <span className="font-mono text-[8px] text-white font-bold uppercase">REV ACTUATOR</span>
                       <span className="font-mono text-[6px] text-[#8e95a0] uppercase">REVERSE SAMPLE</span>
@@ -1509,7 +2061,7 @@ export default function App() {
                   </div>
 
                   {/* ANTI-CLIPPING SWITCH */}
-                  <div className="bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2">
+                  <div className="interactive-card bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2">
                     <div className="flex flex-col">
                       <span className="font-mono text-[8px] text-white font-bold uppercase">ANTI-CLIP FADE</span>
                       <span className="font-mono text-[6px] text-[#8e95a0] uppercase">SMOOTH COUPLING</span>
@@ -1530,7 +2082,7 @@ export default function App() {
                   </div>
 
                   {/* POLYPHONY / STANDBY POWER SWITCH */}
-                  <div className="bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2">
+                  <div className="interactive-card bg-[#24272c] p-2 rounded border border-[#2b2e34] flex flex-col justify-between gap-2">
                     <div className="flex flex-col">
                       <span className="font-mono text-[8px] text-white font-bold uppercase">STANDBY POWER</span>
                       <span className="font-mono text-[6px] text-[#8e95a0] uppercase">POLY vs MONO</span>
@@ -1551,9 +2103,9 @@ export default function App() {
               </div>
 
               {/* MASTER LEVEL CONTROL */}
-              <div className="flex flex-col gap-4 bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] mt-4">
+              <div className="interactive-card flex flex-col gap-4 bg-[#1e2024] p-4 rounded-lg border border-[#2b2e34] mt-4">
                 <div className="font-mono text-[8px] text-[#ff3b30] uppercase font-black tracking-widest border-b border-[#2b2e34] pb-1.5 mb-1">
-                  06 // MASTER LEVEL CONTROLLER
+                  MASTER LEVEL CONTROLLER
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex flex-col gap-1">
@@ -1606,7 +2158,7 @@ export default function App() {
         </div>
 
         {/* PIANO KEYBOARD SECTION (MÓDULO DE PERFORMANCE) */}
-        <div className="p-4 md:p-6 bg-[#32363c] border-t-2 border-[#1e2024] relative shadow-lg">
+        <div className="interactive-card p-4 md:p-6 bg-[#31353b] border-t border-white/5 relative shadow-[0_-4px_12px_rgba(0,0,0,0.12)]">
           {/* Parafusos */}
           <div className="absolute top-2 left-2"><Screw /></div>
           <div className="absolute top-2 right-2"><Screw /></div>
@@ -1618,7 +2170,7 @@ export default function App() {
           </div>
 
           {/* Status LED Bar */}
-          <div className="flex flex-wrap items-center justify-between gap-4 bg-[#1e2024] p-3 rounded-lg border border-[#2b2e34] mb-4 font-mono">
+          <div className="interactive-card flex flex-wrap items-center justify-between gap-4 bg-[#1e2024] p-3 rounded-lg border border-[#2b2e34] mb-4 font-mono">
             <div className="flex items-center gap-2">
               <span className="text-[9px] text-[#8e95a0] uppercase font-bold">LKG ACTUATOR SIGNAL:</span>
               <span className="text-[11px] text-[#ff9500] font-black bg-black/50 px-2 py-0.5 rounded border border-[#2b2e34]">
@@ -1638,7 +2190,7 @@ export default function App() {
             <Keyboard
               onPlayNote={handlePlayNote}
               onStopNote={handleStopNote}
-              activeMidiNotes={activeMidiNotes}
+              activeMidiNotes={settings.loopInterleaveEnabled && settings.loopLatchEnabled ? new Set([...activeMidiNotes, ...latchedMidiNotes]) : activeMidiNotes}
               lastPlayedNote={lastPlayedNote}
               setLastPlayedNote={setLastPlayedNote}
             />
@@ -1646,7 +2198,7 @@ export default function App() {
         </div>
 
         {/* BOTTOM FIXED CONSOLE / BAR PARA EXPORTAR WAV */}
-        <div className="bg-[#2d3035] border-t-2 border-[#1e2023] px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="bg-[#24282d] border-t border-white/5 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex flex-col font-mono text-[9px] text-[#8e95a0]">
             <span className="uppercase">OUTPUT WAV DESIGNATION:</span>
             <span className="text-white font-bold text-xs truncate max-w-[280px] sm:max-w-none block mt-0.5">

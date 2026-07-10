@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
+import { InfoDot } from './InfoDot';
 
 interface CustomSliderProps {
   min: number;
@@ -7,6 +8,7 @@ interface CustomSliderProps {
   onChange: (next: number) => void;
   label: string;
   unit?: string;
+  helpText?: string;
   step?: number;
   orientation?: 'horizontal' | 'vertical';
   density?: 'default' | 'compact';
@@ -22,6 +24,7 @@ export const CustomSlider: React.FC<CustomSliderProps> = ({
   onChange,
   label,
   unit = '',
+  helpText,
   step = 1,
   orientation = 'horizontal',
   density = 'default',
@@ -105,7 +108,10 @@ export const CustomSlider: React.FC<CustomSliderProps> = ({
   if (orientation === 'vertical') {
     return (
       <div className={`flex flex-col items-center gap-1.5 md:gap-2 ${className}`}>
-        <span className={`font-mono text-[#8e95a0] uppercase tracking-wider font-bold text-center ${isCompact ? 'text-[7px]' : 'text-[8px]'}`}>{label}</span>
+        <div className={`flex items-center justify-center gap-1 font-mono text-[#8e95a0] uppercase tracking-wider font-bold text-center ${isCompact ? 'text-[7px]' : 'text-[8px]'}`}>
+          <span>{label}</span>
+          {helpText && <InfoDot description={helpText} />}
+        </div>
         <div
           ref={trackRef}
           role="slider"
@@ -119,7 +125,7 @@ export const CustomSlider: React.FC<CustomSliderProps> = ({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
-          className={`relative rounded-full border border-[#3a414c] bg-[#15191f] cursor-pointer outline-none ${verticalTrackClass}`}
+          className={`interactive-control relative rounded-full border border-[#3a414c] bg-[#15191f] cursor-pointer outline-none ${verticalTrackClass}`}
           style={{
             boxShadow: 'inset 0 0 8px rgba(0,0,0,0.8), 0 0 10px rgba(255,156,26,0.1)',
           }}
@@ -153,7 +159,10 @@ export const CustomSlider: React.FC<CustomSliderProps> = ({
   return (
     <div className={`flex flex-col gap-1 md:gap-1.5 ${className}`}>
       <div className="flex items-center justify-between">
-        <span className={`font-mono text-[#8e95a0] uppercase font-bold tracking-wider ${isCompact ? 'text-[8px]' : 'text-[9px]'}`}>{label}</span>
+        <div className={`flex items-center gap-1 font-mono text-[#8e95a0] uppercase font-bold tracking-wider ${isCompact ? 'text-[8px]' : 'text-[9px]'}`}>
+          <span>{label}</span>
+          {helpText && <InfoDot description={helpText} />}
+        </div>
         <span className={`font-mono text-[#ffb85a] bg-black/70 border border-[#2e343c] rounded px-1.5 py-0.5 ${isCompact ? 'text-[9px]' : 'text-[10px]'}`}>{displayValue}</span>
       </div>
       <div
@@ -169,7 +178,7 @@ export const CustomSlider: React.FC<CustomSliderProps> = ({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        className={`relative rounded-full border border-[#3a414c] bg-[#15191f] cursor-pointer outline-none ${horizontalTrackClass}`}
+        className={`interactive-control relative rounded-full border border-[#3a414c] bg-[#15191f] cursor-pointer outline-none ${horizontalTrackClass}`}
         style={{
           boxShadow: 'inset 0 0 8px rgba(0,0,0,0.85), 0 0 10px rgba(255,156,26,0.1)',
         }}

@@ -2,7 +2,9 @@ import {
   ModMatrixSlot,
   NoiseColor,
   PwmTarget,
+  SourceWaveEffect,
   SynthSettings,
+  ToneGeneratorType,
 } from '../types';
 
 interface VoiceUnit {
@@ -25,6 +27,10 @@ interface ActiveVoice {
   units: VoiceUnit[];
   noteGain: GainNode;
   voiceMix: GainNode;
+  eqLow: BiquadFilterNode;
+  eqMid: BiquadFilterNode;
+  eqHigh: BiquadFilterNode;
+  driveNode: WaveShaperNode;
   ringOsc: OscillatorNode;
   ringAmount: GainNode;
   ringVca: GainNode;
@@ -54,6 +60,8 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 export class SynthEngine {
   private audioCtx: AudioContext | null = null;
   private sampleBuffer: AudioBuffer | null = null;
+  private sampleOrigin: 'external' | 'generated' = 'external';
+  private generatedType: ToneGeneratorType | null = null;
   private activeVoices: Map<number, ActiveVoice> = new Map();
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
@@ -97,6 +105,117 @@ export class SynthEngine {
       x = this.foldSample(x * gain);
     }
     return clamp(x, -1, 1);
+  }
+
+  private baseWaveAtPhase(kind: SourceWaveEffect | ToneGeneratorType, phase: number): number {
+    const frac = phase - Math.floor(phase);
+    if (kind === 'sine') return Math.sin(frac * Math.PI * 2);
+    if (kind === 'triangle') return 1 - 4 * Math.abs(frac - 0.5);
+    if (kind === 'sawtooth') return frac * 2 - 1;
+    if (kind === 'square') return frac < 0.5 ? 1 : -1;
+    if (kind === 'pulse') return frac < 0.2 ? 1 : -1;
+    return Math.sin(frac * Math.PI * 2);
+  }
+
+  private generatedToneSample(kind: ToneGeneratorType, phase: number, t: number, freq: number): number {
+    const frac = phase - Math.floor(phase);
+    if (kind === 'noise') {
+      const pseudo = Math.sin((t * 7711.23 + freq * 0.013) * 91.17) * 43758.5453123;
+      return ((pseudo - Math.floor(pseudo)) * 2) - 1;
+    }
+    if (kind === 'supersaw') {
+      const d1 = ((phase * 0.993) % 1) * 2 - 1;
+      const d2 = ((phase * 1.007) % 1) * 2 - 1;
+      const center = frac * 2 - 1;
+      return (center + d1 + d2) / 3;
+    }
+    if (kind === 'fm-bell') {
+      const mod = Math.sin(2 * Math.PI * freq * 2.8 * t) * Math.exp(-4.2 * t);
+      const car = Math.sin((2 * Math.PI * freq * t) + mod * 4.5);
+      return car * Math.exp(-3.8 * t);
+    }
+    if (kind === 'pluck') {
+      const pseudo = Math.sin((t * 5317.81 + freq * 0.004) * 59.31) * 19341.894;
+      const noise = ((pseudo - Math.floor(pseudo)) * 2) - 1;
+      const body = Math.sin(2 * Math.PI * freq * t) * Math.exp(-8 * t);
+      return (noise * Math.exp(-22 * t) * 0.8) + body;
+    }
+    return this.baseWaveAtPhase(kind, frac);
+  }
+
+  private applySourceWaveEffect(sample: number, phase: number, settings: SynthSettings): number {
+    if (settings.sourceWaveEffect === 'off' || settings.sourceWaveAmount <= 0) return sample;
+    const raw = clamp(settings.sourceWaveAmount / 100, 0, 1);
+    const mix = raw <= 0.3
+      ? (raw * raw) / 0.3
+      : raw;
+
+    let shaped = this.baseWaveAtPhase(settings.sourceWaveEffect, phase);
+    let modeMix = mix;
+
+    if (settings.sourceWaveMode === 'aggressive') {
+      modeMix = clamp(mix * 1.2, 0, 1);
+      const drive = 1 + modeMix * 3.2;
+      shaped = Math.tanh(shaped * drive);
+    }
+
+    return clamp((sample * (1 - modeMix)) + (shaped * modeMix), -1, 1);
+  }
+
+  private removeDcOffset(data: Float32Array) {
+    if (data.length === 0) return;
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    const mean = sum / data.length;
+    if (Math.abs(mean) < 1e-6) return;
+    for (let i = 0; i < data.length; i++) {
+      data[i] = clamp(data[i] - mean, -1, 1);
+    }
+  }
+
+  private smoothLoopSeam(data: Float32Array, enabled: boolean) {
+    if (!enabled || data.length < 16) return;
+    const fadeLen = Math.min(128, Math.max(8, Math.floor(data.length * 0.08)));
+    if (fadeLen * 2 >= data.length) return;
+
+    for (let i = 0; i < fadeLen; i++) {
+      const t = i / (fadeLen - 1);
+      const headIdx = i;
+      const tailIdx = data.length - fadeLen + i;
+      const head = data[headIdx];
+      const tail = data[tailIdx];
+      const stitched = tail * (1 - t) + head * t;
+      data[headIdx] = stitched;
+      data[tailIdx] = stitched;
+    }
+  }
+
+  private applyFxDrive(sample: number, driveAmount: number): number {
+    if (driveAmount <= 0) return sample;
+    const drive = 1 + (driveAmount / 100) * 9;
+    return clamp(Math.tanh(sample * drive), -1, 1);
+  }
+
+  private applyEqCurveSettings(settings: SynthSettings) {
+    return {
+      lowGain: settings.block01Enabled ? settings.lowGain + settings.bassBoost : 0,
+      bassGain: settings.block01Enabled ? settings.bassBoost : 0,
+      midGain: settings.block01Enabled ? settings.midGain : 0,
+      highGain: settings.block01Enabled ? settings.highGain : 0,
+    };
+  }
+
+  private applyEqToVoice(voice: ActiveVoice, settings: SynthSettings, now: number) {
+    const eq = this.applyEqCurveSettings(settings);
+    voice.eqLow.frequency.setTargetAtTime(90, now, 0.02);
+    voice.eqLow.gain.setTargetAtTime(eq.lowGain, now, 0.02);
+
+    voice.eqMid.frequency.setTargetAtTime(1200, now, 0.02);
+    voice.eqMid.Q.setTargetAtTime(0.95, now, 0.02);
+    voice.eqMid.gain.setTargetAtTime(eq.midGain, now, 0.02);
+
+    voice.eqHigh.frequency.setTargetAtTime(7800, now, 0.02);
+    voice.eqHigh.gain.setTargetAtTime(eq.highGain, now, 0.02);
   }
 
   private phaseWarp(phase: number, pwmAmount: number, pwmTarget: PwmTarget): number {
@@ -187,8 +306,10 @@ export class SynthEngine {
     return this.sampleBuffer;
   }
 
-  public setSampleBuffer(buffer: AudioBuffer) {
+  public setSampleBuffer(buffer: AudioBuffer, origin: 'external' | 'generated' = 'external', generatedType: ToneGeneratorType | null = null) {
     this.sampleBuffer = buffer;
+    this.sampleOrigin = origin;
+    this.generatedType = generatedType;
     this.generateWaveformData();
   }
 
@@ -226,7 +347,7 @@ export class SynthEngine {
           const context = this.init();
           const decodedBuffer = await context.decodeAudioData(arrayBuffer);
           const trimmedBuffer = this.autoTrimSilence(decodedBuffer);
-          this.setSampleBuffer(trimmedBuffer);
+          this.setSampleBuffer(trimmedBuffer, 'external', null);
           this.mediaRecorder?.stream.getTracks().forEach((track) => track.stop());
           resolve(trimmedBuffer);
         } catch (err) {
@@ -243,35 +364,31 @@ export class SynthEngine {
     const arrayBuffer = await file.arrayBuffer();
     const decodedBuffer = await context.decodeAudioData(arrayBuffer);
     const trimmedBuffer = this.autoTrimSilence(decodedBuffer);
-    this.setSampleBuffer(trimmedBuffer);
+    this.setSampleBuffer(trimmedBuffer, 'external', null);
     return trimmedBuffer;
   }
 
-  public async generateBip(type: OscillatorType, durationMs: number): Promise<AudioBuffer> {
+  public async generateBip(type: ToneGeneratorType, durationMs: number, baseFreq: number = 220): Promise<AudioBuffer> {
     const context = this.init();
     const sampleRate = context.sampleRate;
     const durationSec = durationMs / 1000;
-    const frameCount = sampleRate * durationSec;
-    const offlineCtx = new OfflineAudioContext(1, frameCount, sampleRate);
+    const frameCount = Math.max(64, Math.floor(sampleRate * durationSec));
+    const renderedBuffer = context.createBuffer(1, frameCount, sampleRate);
+    const ch = renderedBuffer.getChannelData(0);
+    const attackSec = Math.min(0.008, durationSec * 0.2);
+    const releaseSec = Math.min(0.03, durationSec * 0.4);
+    const releaseStart = Math.max(0, durationSec - releaseSec);
 
-    const osc = offlineCtx.createOscillator();
-    const gain = offlineCtx.createGain();
+    for (let i = 0; i < frameCount; i++) {
+      const t = i / sampleRate;
+      const phase = t * baseFreq;
+      let env = 1;
+      if (attackSec > 0 && t < attackSec) env = t / attackSec;
+      else if (releaseSec > 0 && t > releaseStart) env = Math.max(0, 1 - ((t - releaseStart) / releaseSec));
+      ch[i] = this.generatedToneSample(type, phase, t, baseFreq) * env * 0.92;
+    }
 
-    osc.type = type;
-    osc.frequency.setValueAtTime(220, 0);
-    gain.gain.setValueAtTime(0, 0);
-    gain.gain.linearRampToValueAtTime(1, 0.01);
-    gain.gain.setValueAtTime(1, durationSec - 0.02);
-    gain.gain.linearRampToValueAtTime(0, durationSec);
-
-    osc.connect(gain);
-    gain.connect(offlineCtx.destination);
-
-    osc.start(0);
-    osc.stop(durationSec);
-
-    const renderedBuffer = await offlineCtx.startRendering();
-    this.setSampleBuffer(renderedBuffer);
+    this.setSampleBuffer(renderedBuffer, 'generated', type);
     return renderedBuffer;
   }
 
@@ -346,15 +463,15 @@ export class SynthEngine {
     const totalFrames = Math.floor(baseBuffer.length * trimPercent);
     const length = Math.max(100, totalFrames);
 
-    const processed = context.createBuffer(channels, length, sampleRate);
+    const prepared = context.createBuffer(channels, length, sampleRate);
 
     for (let c = 0; c < channels; c++) {
       const srcData = baseBuffer.getChannelData(c);
-      const dstData = processed.getChannelData(c);
+      const dstData = prepared.getChannelData(c);
 
       if (settings.reverse) {
         for (let i = 0; i < length; i++) {
-          dstData[i] = srcData[length - 1 - i];
+          dstData[i] = srcData[Math.max(0, baseBuffer.length - 1 - i)];
         }
       } else {
         for (let i = 0; i < length; i++) {
@@ -370,7 +487,126 @@ export class SynthEngine {
       }
     }
 
-    return processed;
+    const eq = this.applyEqCurveSettings(settings);
+    const applyDriveToBuffer = (buffer: AudioBuffer) => {
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        const data = buffer.getChannelData(c);
+        for (let i = 0; i < data.length; i++) {
+          data[i] = this.applyFxDrive(data[i], settings.drive);
+        }
+      }
+      return buffer;
+    };
+
+    if (!settings.block01Enabled || (eq.lowGain === 0 && eq.midGain === 0 && eq.highGain === 0)) {
+      return applyDriveToBuffer(prepared);
+    }
+
+    type BiquadCoefficients = {
+      b0: number;
+      b1: number;
+      b2: number;
+      a0: number;
+      a1: number;
+      a2: number;
+    };
+
+    type BiquadState = {
+      x1: number;
+      x2: number;
+      y1: number;
+      y2: number;
+    };
+
+    const makeCoefficients = (
+      type: 'lowshelf' | 'peaking' | 'highshelf',
+      freq: number,
+      qOrSlope: number,
+      gainDb: number,
+    ): BiquadCoefficients => {
+      const w0 = (2 * Math.PI * freq) / sampleRate;
+      const cosW0 = Math.cos(w0);
+      const sinW0 = Math.sin(w0);
+      const a = Math.pow(10, gainDb / 40);
+      const alpha = type === 'peaking'
+        ? sinW0 / (2 * qOrSlope)
+        : (sinW0 / 2) * Math.sqrt((a + 1 / a) * (1 / qOrSlope - 1) + 2);
+      const beta = Math.sqrt(a) / qOrSlope;
+
+      if (type === 'lowshelf') {
+        const twoSqrtAAlpha = 2 * Math.sqrt(a) * alpha;
+        return {
+          b0: a * ((a + 1) - (a - 1) * cosW0 + twoSqrtAAlpha),
+          b1: 2 * a * ((a - 1) - (a + 1) * cosW0),
+          b2: a * ((a + 1) - (a - 1) * cosW0 - twoSqrtAAlpha),
+          a0: (a + 1) + (a - 1) * cosW0 + twoSqrtAAlpha,
+          a1: -2 * ((a - 1) + (a + 1) * cosW0),
+          a2: (a + 1) + (a - 1) * cosW0 - twoSqrtAAlpha,
+        };
+      }
+
+      if (type === 'highshelf') {
+        const twoSqrtAAlpha = 2 * Math.sqrt(a) * alpha;
+        return {
+          b0: a * ((a + 1) + (a - 1) * cosW0 + twoSqrtAAlpha),
+          b1: -2 * a * ((a - 1) + (a + 1) * cosW0),
+          b2: a * ((a + 1) + (a - 1) * cosW0 - twoSqrtAAlpha),
+          a0: (a + 1) - (a - 1) * cosW0 + twoSqrtAAlpha,
+          a1: 2 * ((a - 1) - (a + 1) * cosW0),
+          a2: (a + 1) - (a - 1) * cosW0 - twoSqrtAAlpha,
+        };
+      }
+
+      return {
+        b0: 1 + alpha * a,
+        b1: -2 * cosW0,
+        b2: 1 - alpha * a,
+        a0: 1 + alpha / a,
+        a1: -2 * cosW0,
+        a2: 1 - alpha / a,
+      };
+    };
+
+    const processBiquad = (input: Float32Array, coeffs: BiquadCoefficients): Float32Array => {
+      const output = new Float32Array(input.length);
+      const state: BiquadState = { x1: 0, x2: 0, y1: 0, y2: 0 };
+      const a0 = coeffs.a0 || 1;
+      const b0 = coeffs.b0 / a0;
+      const b1 = coeffs.b1 / a0;
+      const b2 = coeffs.b2 / a0;
+      const a1 = coeffs.a1 / a0;
+      const a2 = coeffs.a2 / a0;
+
+      for (let i = 0; i < input.length; i++) {
+        const x = input[i];
+        const y = b0 * x + b1 * state.x1 + b2 * state.x2 - a1 * state.y1 - a2 * state.y2;
+        output[i] = y;
+        state.x2 = state.x1;
+        state.x1 = x;
+        state.y2 = state.y1;
+        state.y1 = y;
+      }
+
+      return output;
+    };
+
+    const lowShelf = makeCoefficients('lowshelf', 90, 0.75, eq.lowGain);
+    const lowMid = makeCoefficients('peaking', 130, 0.85, eq.bassGain);
+    const midPeak = makeCoefficients('peaking', 1200, 0.95, eq.midGain);
+    const highShelf = makeCoefficients('highshelf', 7800, 0.75, eq.highGain);
+
+    const rendered = context.createBuffer(channels, length, sampleRate);
+
+    for (let c = 0; c < channels; c++) {
+      const sourceData = prepared.getChannelData(c);
+      const lowData = processBiquad(sourceData, lowShelf);
+      const bassData = processBiquad(lowData, lowMid);
+      const midData = processBiquad(bassData, midPeak);
+      const highData = processBiquad(midData, highShelf);
+      rendered.getChannelData(c).set(highData);
+    }
+
+    return applyDriveToBuffer(rendered);
   }
 
   private createNoteBuffer(baseBuffer: AudioBuffer, targetFreq: number, settings: SynthSettings): AudioBuffer {
@@ -380,6 +616,42 @@ export class SynthEngine {
     const periodFrames = Math.max(8, Math.floor((1 / targetFreq) * sampleRate));
 
     const periodBuffer = context.createBuffer(channels, periodFrames, sampleRate);
+
+    if (this.sampleOrigin === 'generated' && this.generatedType) {
+      const downsampleFactor = Math.max(1, Math.floor(1 + (settings.sampleRateReduction / 100) * 28));
+      const bitDepth = clamp(16 - (settings.bitcrusher / 100) * 14, 2, 16);
+      const bitStep = Math.pow(2, bitDepth - 1);
+
+      for (let c = 0; c < channels; c++) {
+        const dstData = periodBuffer.getChannelData(c);
+        let held = 0;
+        for (let i = 0; i < periodFrames; i++) {
+          const phase = i / periodFrames;
+          const t = i / sampleRate;
+          let x = this.generatedToneSample(this.generatedType, phase, t, targetFreq);
+          x = this.applySourceWaveEffect(x, phase, settings);
+
+          if (settings.subLevel > 0) {
+            const sub = Math.sign(Math.sin(2 * Math.PI * (phase / Math.pow(2, settings.subOctave))));
+            const dirtySub = Math.tanh(sub * (1 + settings.subDrive / 20));
+            x += dirtySub * (settings.subLevel / 100) * 0.55;
+          }
+
+          x = this.applyWaveShapers(x, settings);
+
+          if (i % downsampleFactor === 0) {
+            held = Math.round(x * bitStep) / bitStep;
+          }
+          dstData[i] = held;
+        }
+
+        this.removeDcOffset(dstData);
+        this.smoothLoopSeam(dstData, settings.autoFade);
+      }
+
+      return periodBuffer;
+    }
+
     const processedBase = this.processBuffer(baseBuffer, settings);
     const refData = processedBase.getChannelData(0);
 
@@ -408,6 +680,7 @@ export class SynthEngine {
         const srcIndex = (peakIndex + Math.floor(warpedPhase * periodFrames)) % srcData.length;
 
         let x = srcData[srcIndex];
+        x = this.applySourceWaveEffect(x, phase, settings);
 
         if (settings.subLevel > 0) {
           const subFreq = targetFreq / Math.pow(2, settings.subOctave);
@@ -424,16 +697,8 @@ export class SynthEngine {
         dstData[i] = held;
       }
 
-      if (settings.autoFade) {
-        const fadeLen = Math.min(Math.floor(periodFrames * 0.08), Math.floor(0.0015 * sampleRate));
-        if (fadeLen > 0) {
-          for (let i = 0; i < fadeLen; i++) {
-            const factor = i / fadeLen;
-            dstData[i] *= factor;
-            dstData[periodFrames - 1 - i] *= factor;
-          }
-        }
-      }
+      this.removeDcOffset(dstData);
+      this.smoothLoopSeam(dstData, settings.autoFade);
     }
 
     return periodBuffer;
@@ -552,6 +817,7 @@ export class SynthEngine {
     voice.ringOsc.frequency.setTargetAtTime(ringFreq, now, 0.03);
     voice.ringAmount.gain.setTargetAtTime(ringAmt / 100, now, 0.03);
     voice.ringDry.gain.setTargetAtTime(1 - ringAmt / 100, now, 0.03);
+    voice.driveNode.curve = this.makeDistortionCurve(settings.drive);
 
     const blend = settings.filterParallelBlend / 100;
     voice.units.forEach((unit) => {
@@ -586,12 +852,31 @@ export class SynthEngine {
     const voiceMix = context.createGain();
     voiceMix.gain.setValueAtTime(1, context.currentTime);
 
+    const eqLow = context.createBiquadFilter();
+    eqLow.type = 'lowshelf';
+    eqLow.frequency.setValueAtTime(90, context.currentTime);
+    eqLow.gain.setValueAtTime(0, context.currentTime);
+
+    const eqMid = context.createBiquadFilter();
+    eqMid.type = 'peaking';
+    eqMid.frequency.setValueAtTime(1200, context.currentTime);
+    eqMid.Q.setValueAtTime(0.95, context.currentTime);
+    eqMid.gain.setValueAtTime(0, context.currentTime);
+
+    const eqHigh = context.createBiquadFilter();
+    eqHigh.type = 'highshelf';
+    eqHigh.frequency.setValueAtTime(7800, context.currentTime);
+    eqHigh.gain.setValueAtTime(0, context.currentTime);
+
     const noteGain = context.createGain();
     noteGain.gain.setValueAtTime(0, context.currentTime);
 
     const ringDry = context.createGain();
     const ringVca = context.createGain();
     const ringMixOut = context.createGain();
+    const driveNode = context.createWaveShaper();
+    driveNode.curve = this.makeDistortionCurve(settings.drive);
+    driveNode.oversample = '4x';
     ringDry.gain.setValueAtTime(1 - settings.ringModAmount / 100, context.currentTime);
     ringVca.gain.setValueAtTime(0, context.currentTime);
 
@@ -635,15 +920,19 @@ export class SynthEngine {
     const selfOscGain = context.createGain();
     selfOscGain.gain.setValueAtTime(0, context.currentTime);
 
-    voiceMix.connect(ringDry);
-    voiceMix.connect(ringVca);
+    voiceMix.connect(eqLow);
+    eqLow.connect(eqMid);
+    eqMid.connect(eqHigh);
+    eqHigh.connect(ringDry);
+    eqHigh.connect(ringVca);
     ringDry.connect(ringMixOut);
     ringVca.connect(ringMixOut);
     selfOsc.connect(selfOscGain);
     selfOscGain.connect(ringMixOut);
 
-    ringMixOut.connect(chorusDry);
-    ringMixOut.connect(chorusDelay);
+    ringMixOut.connect(driveNode);
+    driveNode.connect(chorusDry);
+    driveNode.connect(chorusDelay);
     chorusDelay.connect(chorusWet);
     chorusDry.connect(gaterNode);
     chorusWet.connect(gaterNode);
@@ -791,11 +1080,15 @@ export class SynthEngine {
       units,
       noteGain,
       voiceMix,
+      eqLow,
+      eqMid,
+      eqHigh,
       ringOsc,
       ringAmount,
       ringVca,
       ringDry,
       ringMixOut,
+      driveNode,
       chorusDelay,
       chorusDry,
       chorusWet,
@@ -814,6 +1107,8 @@ export class SynthEngine {
       modulationTimer: null,
       baseDecayMs: decayMs,
     };
+
+    this.applyEqToVoice(voice, settings, now);
 
     voice.modulationTimer = window.setInterval(() => {
       const s = this.lastSettings;
@@ -879,6 +1174,7 @@ export class SynthEngine {
     }
 
     this.activeVoices.forEach((voice) => {
+      this.applyEqToVoice(voice, settings, now);
       voice.chorusDry.gain.setTargetAtTime(1 - settings.chorusMix / 100, now, 0.02);
       voice.chorusWet.gain.setTargetAtTime(settings.chorusMix / 100, now, 0.02);
       voice.chorusLfo.frequency.setTargetAtTime(settings.chorusRate, now, 0.02);
@@ -916,6 +1212,10 @@ export class SynthEngine {
         voice.gaterLfoOffset.stop();
         voice.selfOsc.stop();
         voice.ringOsc.disconnect();
+        voice.eqLow.disconnect();
+        voice.eqMid.disconnect();
+        voice.eqHigh.disconnect();
+        voice.driveNode.disconnect();
         voice.chorusLfo.disconnect();
         voice.gaterLfo.disconnect();
         voice.gaterLfoScale.disconnect();
@@ -991,6 +1291,10 @@ export class SynthEngine {
     post.curve = this.makeDistortionCurve(settings.postFilterDrive);
     post.oversample = '4x';
 
+    const drive = offlineCtx.createWaveShaper();
+    drive.curve = this.makeDistortionCurve(settings.drive);
+    drive.oversample = '4x';
+
     const chorusDelay = offlineCtx.createDelay(0.08);
     chorusDelay.delayTime.setValueAtTime(0.018, 0);
     const dry = offlineCtx.createGain();
@@ -1040,8 +1344,9 @@ export class SynthEngine {
       hpMix.connect(post);
     }
 
-    post.connect(ringDry);
-    post.connect(ringVca);
+    post.connect(drive);
+    drive.connect(ringDry);
+    drive.connect(ringVca);
     ringDry.connect(chorusDelay);
     ringVca.connect(chorusDelay);
 

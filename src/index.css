@@ -7,6 +7,61 @@
   --font-mono: "JetBrains Mono", "Share Tech Mono", ui-monospace, monospace;
 }
 
+html, body, #root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 149, 0, 0.10), transparent 26%),
+    radial-gradient(circle at 80% 10%, rgba(52, 199, 89, 0.07), transparent 22%),
+    linear-gradient(180deg, #1b1d22 0%, #252930 38%, #181a1f 100%);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  background:
+    radial-gradient(circle at top left, rgba(255, 149, 0, 0.08), transparent 24%),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.05), transparent 20%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 20%);
+}
+
+.app-shell :is(button, select, input[type="text"], input[type="file"], [role="slider"], .interactive-control, .interactive-card, .info-dot) {
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+
+.app-shell :is(button, select, input[type="text"], [role="slider"], .interactive-control, .interactive-card):not(:disabled):hover {
+}
+
+.app-shell :is(button, select, input[type="text"], [role="slider"], .interactive-control, .interactive-card):not(:disabled):active {
+}
+
+.app-shell :is(button, select, input[type="text"], [role="slider"], .interactive-control, .interactive-card):focus-visible {
+  outline: 2px solid rgba(255, 156, 26, 0.65);
+  outline-offset: 2px;
+}
+
+.app-shell button:disabled,
+.app-shell select:disabled,
+.app-shell input:disabled {
+  cursor: not-allowed;
+}
+
+.app-shell .interactive-card:hover {
+  border-color: rgba(255, 156, 26, 0.18);
+}
+
+.app-shell .info-dot:hover {
+}
+
+.app-shell .interactive-control:hover {
+  border-color: rgba(255, 156, 26, 0.28);
+}
+
 /* Custom Cockpit style styles */
 @keyframes blink-led {
   0%, 100% { opacity: 1; filter: drop-shadow(0 0 8px currentColor); }
