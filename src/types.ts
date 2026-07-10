@@ -73,7 +73,7 @@ export interface SynthSettings {
   bitcrusher: number; // 0 a 100 (bitcrush / decimador)
   sampleRateReduction: number; // 0 a 100 (sample rate reducer)
   polyphony: boolean;
-  masterGain: number; // 0 a 100 % (Volume Master)
+  masterGain: number; // 0 a 300 % (Volume Master)
 
   // Fonte / osciladores
   wavefoldAmount: number; // 0..100

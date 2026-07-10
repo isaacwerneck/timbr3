@@ -2205,7 +2205,7 @@ export default function App() {
                     <div className="flex flex-col items-center">
                       <Knob
                         min={0}
-                        max={100}
+                        max={300}
                         value={settings.masterGain}
                         onChange={(v) => handleSettingChange('masterGain', v)}
                         name="MASTER"
@@ -2216,12 +2216,12 @@ export default function App() {
                     <div className="flex flex-col gap-1 w-24">
                       <div className="font-mono text-[7px] text-[#8e95a0] uppercase font-black text-center mb-0.5">VU METER</div>
                       <div className="h-4 bg-[#141517] rounded border border-[#2d3138] p-0.5 flex gap-[2px] items-center overflow-hidden">
-                        {Array.from({ length: 12 }).map((_, i) => {
-                          const threshold = (i / 12) * 100;
-                          const isActive = settings.masterGain >= threshold;
-                          let colorClass = 'bg-[#34c759]'; // green
-                          if (i >= 8) colorClass = 'bg-[#ff9500]'; // orange
-                          if (i >= 10) colorClass = 'bg-[#ff3b30]'; // red
+{Array.from({ length: 12 }).map((_, i) => {
+  const threshold = (i / 12) * 300;
+  const isActive = settings.masterGain >= threshold;
+  let colorClass = 'bg-[#34c759]'; // green (0-100%, unity gain)
+  if (i >= 4) colorClass = 'bg-[#ff9500]'; // orange (100-200%, pushing the limiter)
+  if (i >= 8) colorClass = 'bg-[#ff3b30]'; // red (200-300%, heavy limiting)
                           return (
                             <div 
                               key={i} 

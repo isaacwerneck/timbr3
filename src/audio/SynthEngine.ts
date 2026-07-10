@@ -59,6 +59,7 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 
 export class SynthEngine {
   private audioCtx: AudioContext | null = null;
+  private curveCache = new Map<number, Float32Array>();
   private sampleBuffer: AudioBuffer | null = null;
   private sampleOrigin: 'external' | 'generated' = 'external';
   private generatedType: ToneGeneratorType | null = null;
@@ -74,7 +75,11 @@ export class SynthEngine {
     // Lazy init
   }
 
-  private makeDistortionCurve(amount: number): Float32Array {
+private makeDistortionCurve(amount: number): Float32Array {
+    const key = Math.round(amount * 100);
+    const cached = this.curveCache.get(key);
+    if (cached) return cached;
+
     const k = 1 + amount * 3;
     const n = 44100;
     const curve = new Float32Array(n);
@@ -82,6 +87,7 @@ export class SynthEngine {
       const x = (i * 2) / n - 1;
       curve[i] = ((3 + k) * x * 20 * (Math.PI / 180)) / (Math.PI + k * Math.abs(x));
     }
+    this.curveCache.set(key, curve);
     return curve;
   }
 
@@ -276,16 +282,24 @@ export class SynthEngine {
     return buf;
   }
 
-  public init(initialMasterGain: number = 80) {
+public init(initialMasterGain: number = 80) {
     if (!this.audioCtx) {
       this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       this.masterGainNode = this.audioCtx.createGain();
       this.masterGainNode.gain.setValueAtTime(initialMasterGain / 100, this.audioCtx.currentTime);
 
+      const limiter = this.audioCtx.createDynamicsCompressor();
+      limiter.threshold.setValueAtTime(-1, this.audioCtx.currentTime);
+      limiter.knee.setValueAtTime(0, this.audioCtx.currentTime);
+      limiter.ratio.setValueAtTime(20, this.audioCtx.currentTime);
+      limiter.attack.setValueAtTime(0.001, this.audioCtx.currentTime);
+      limiter.release.setValueAtTime(0.05, this.audioCtx.currentTime);
+
       this.analyserNode = this.audioCtx.createAnalyser();
       this.analyserNode.fftSize = 512;
 
-      this.masterGainNode.connect(this.analyserNode);
+      this.masterGainNode.connect(limiter);
+      limiter.connect(this.analyserNode);
       this.analyserNode.connect(this.audioCtx.destination);
     }
     if (this.audioCtx.state === 'suspended') {
